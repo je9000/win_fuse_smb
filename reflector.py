@@ -143,8 +143,10 @@ def handle_arp(pcap, wire_packet):
 		reply_arp.set_ar_sha( OUR_MAC_ARRAY )
 
 		reply.contains(reply_arp)
-		packet_str = reply.get_packet()
-		pcap_sendpacket(pcap, cast(reply.get_packet(), POINTER(u_char)), reply.get_size())
+		reply_str = reply.get_packet()
+		pcap_sendpacket(pcap, cast(reply_str, POINTER(u_char)), len(reply_str))
+# Why doesn't this work for ARP when it works for everything else?
+#		pcap_sendpacket(pcap, cast(reply.get_packet(), POINTER(u_char)), reply.get_size())
 
 def handle_icmp(pcap, wire_packet, ip):
 	icmp = ip.child()
@@ -160,6 +162,7 @@ def handle_icmp(pcap, wire_packet, ip):
 
 		ip_reply.contains( icmp_reply )
 		reply.contains( ip_reply )
+
 		pcap_sendpacket(pcap, cast(reply.get_packet(), POINTER(u_char)), reply.get_size())
 
 def handle_tcp2(pcap, wire_packet, ip):
