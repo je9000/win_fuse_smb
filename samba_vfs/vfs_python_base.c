@@ -23,7 +23,10 @@
 
 
 #include "../source3/include/includes.h"
+#include <dirent.h>
 #include <Python.h>
+
+#define E_INTERNAL ENOMEM
 
 /* PLEASE,PLEASE READ THE VFS MODULES CHAPTER OF THE 
    SAMBA DEVELOPERS GUIDE!!!!!!
@@ -33,11 +36,21 @@
  * you must re-implement every function.
  */
 
+struct my_dir {
+    long			offset; 
+    long			entries; 
+    struct dirent	entry[1];
+};
+
 struct pyfuncs {
-    PyObject *pModule;
-    PyObject *pFuncConnect;
-    PyObject *pFuncRealPath;
-    PyObject *pFuncStat;
+    PyObject	*pModule;
+    PyObject	*pFuncConnect;
+    PyObject	*pFuncStat;
+    PyObject	*pFuncGetDir;
+    PyObject	*pFuncOpenFile;
+    PyObject	*pFuncCreateFile;
+    PyObject	*pFuncUnlink;
+	char		cwd[255]; // MAXPATH?
 };
 
 static void free_python_data(void **data)
@@ -60,11 +73,12 @@ static int python_connect(vfs_handle_struct *handle,  const char *service, const
     handle->free_data = free_python_data;
 
     memset(pf, 0, sizeof(*pf));
+	pf->cwd[0] = '/';
 
     pysource = lp_parm_const_string(SNUM(handle->conn), "vfs_python", "module_name", NULL);
     if (pysource == NULL) {
 		fprintf(stderr, "vfs_python:module_name not set!\n");
-        errno = ENOSYS;
+        errno = E_INTERNAL;
 		return -1;
     }
 
@@ -73,9 +87,9 @@ static int python_connect(vfs_handle_struct *handle,  const char *service, const
 	Py_DECREF(pName);
 
 	if (!pf->pModule) {
-		PyErr_Print();
 		fprintf(stderr, "Failed to load module '%s', make sure %s.py exists in a directory in the PYTHONPATH environment variable.\n", pysource, pysource);
-        errno = ENOSYS;
+		PyErr_Print();
+        errno = E_INTERNAL;
 		return -1;
 	}
 
@@ -84,7 +98,7 @@ static int python_connect(vfs_handle_struct *handle,  const char *service, const
 	if (!pf->pFunc##_member || !PyCallable_Check(pf->pFunc##_member)) { \
         if (pf->pFunc##_member) Py_DECREF(pf->pFunc##_member); \
 		fprintf(stderr, "%s function not found or not callable\n", _name); \
-        errno = ENOSYS; \
+        errno = E_INTERNAL; \
 		return -1; \
 	}
 
@@ -93,14 +107,15 @@ static int python_connect(vfs_handle_struct *handle,  const char *service, const
     if (!pf->pFunc##_member) { pf->pFunc##_member = NULL; } \
 	else if (!PyCallable_Check(pf->pFunc##_member)) { \
         Py_DECREF(pf->pFunc##_member); \
-		fprintf(stderr, "%s function not found or not callable\n", _name); \
-        errno = ENOSYS; \
-		return -1; \
+		pf->pFunc##_member = NULL; \
 	}
 
     VFS_PY_REQUIRED_MODULE_FUNC(Connect, "connect");
-    VFS_PY_REQUIRED_MODULE_FUNC(Stat, "stat");
-    VFS_PY_OPTIONAL_MODULE_FUNC(RealPath, "real_path");
+    VFS_PY_REQUIRED_MODULE_FUNC(Stat, "getattr");
+    VFS_PY_REQUIRED_MODULE_FUNC(GetDir, "getdir");
+    VFS_PY_REQUIRED_MODULE_FUNC(OpenFile, "open");
+    VFS_PY_REQUIRED_MODULE_FUNC(CreateFile, "create");
+    VFS_PY_REQUIRED_MODULE_FUNC(Unlink, "unlink");
 
     /* Load some functions
 	pf->pFuncConnect = PyObject_GetAttrString(pf->pModule, "connect");
@@ -112,16 +127,21 @@ static int python_connect(vfs_handle_struct *handle,  const char *service, const
 
     // Init done, do connect
 	pArgs = PyTuple_New(2);
+	if (!pArgs) {
+		errno = E_INTERNAL;
+		return -1;
+	}
+
 	if (!(pValue = PyString_FromString(service))) {
 		Py_DECREF(pArgs);
-		errno = ENOSYS;
+		errno = E_INTERNAL;
 		return -1;
 	}
 	PyTuple_SetItem(pArgs, 0, pValue);
 
 	if (!(pValue = PyString_FromString(user))) {
 		Py_DECREF(pArgs);
-		errno = ENOSYS;
+		errno = E_INTERNAL;
 		return -1;
 	}
 	PyTuple_SetItem(pArgs, 1, pValue);
@@ -131,10 +151,11 @@ static int python_connect(vfs_handle_struct *handle,  const char *service, const
 
 	if (pValue) {
 		Py_DECREF(pValue);
-		return (int) PyInt_AsLong(pValue);
+		return (int) PyInt_AS_LONG(pValue);
 	}
+	fprintf(stderr, "vfs_python: connect() failed\n");
 	PyErr_Print();
-	errno = ENOSYS;
+	errno = E_INTERNAL;
 	return -1;
 }
 
@@ -190,11 +211,75 @@ static NTSTATUS python_get_dfs_referrals(struct vfs_handle_struct *handle,
 
 static DIR *python_opendir(vfs_handle_struct *handle,  const char *fname, const char *mask, uint32 attr)
 {
-	return NULL;
+    struct my_dir		*de;
+	long				entries, i;
+	struct pyfuncs		*pf = handle->data;
+    PyObject			*pArgs, *pRet, *pValue;
+
+	pArgs = PyTuple_New(1);
+	if (!pArgs) {
+		errno = E_INTERNAL;
+		return -1;
+	}
+
+	if (!(pValue = PyString_FromString(fname))) {
+		Py_DECREF(pArgs);
+		errno = E_INTERNAL;
+		return -1;
+	}
+
+	PyTuple_SetItem(pArgs, 0, pValue);
+
+	pRet = PyObject_CallObject(pf->pFuncGetDir, pArgs);
+	Py_DECREF(pArgs);
+
+	if (!pRet) {
+		fprintf(stderr, "vfs_python: getdir() failed\n");
+		PyErr_Print();
+		errno = ENOSYS;
+		return NULL;
+	}
+
+	if (!PySequence_Check(pRet)) {
+		fprintf(stderr, "getdir did not return a sequence object!\n");
+		errno = E_INTERNAL;
+		return NULL;
+	}
+
+	entries = PySequence_Length(pRet);
+    if (!(de = SMB_MALLOC(
+		/* Could subtract the size of one entry from the malloc but that's okay */
+		sizeof(*de) + (sizeof(de->entry[0]) * (entries - 1))
+	))) {
+	    Py_DECREF(pRet);
+        errno = ENOMEM;
+        return NULL;
+    }
+    de->offset = 0;
+    de->entries = entries;
+
+	for (i = 0; i < entries; i++) {
+		memset(&de->entry[i], 0, sizeof(de->entry[0]));
+		de->entry[i].d_ino = 1;
+		pArgs = PySequence_GetItem(pRet, i);
+		if (!pArgs) {
+			Py_DECREF(pRet);
+			SAFE_FREE(de);
+			errno = E_INTERNAL;
+			return NULL;
+		}
+		strncpy(de->entry[i].d_name, PyString_AsString(pArgs), sizeof(de->entry[0].d_name));
+		de->entry[i].d_name[sizeof(de->entry[0].d_name) - 1] = '\0';
+		Py_DECREF(pArgs);
+	}
+	Py_DECREF(pRet);
+
+	return de;
 }
 
 static DIR *python_fdopendir(vfs_handle_struct *handle, files_struct *fsp, const char *mask, uint32 attr)
 {
+    errno = ENOSYS;
 	return NULL;
 }
 
@@ -202,22 +287,36 @@ static struct dirent *python_readdir(vfs_handle_struct *handle,
 				       DIR *dirp,
 				       SMB_STRUCT_STAT *sbuf)
 {
-	return NULL;
+	struct dirent *result;
+	struct my_dir *d = dirp;
+
+	if (d->offset >= d->entries) return NULL;
+	result = &d->entry[d->offset++];
+
+    /* Default Posix readdir() does not give us stat info.
+     * Set to invalid to indicate we didn't return this info. */
+    if (sbuf)
+        SET_STAT_INVALID(*sbuf);
+
+	return result;
 }
 
 static void python_seekdir(vfs_handle_struct *handle,  DIR *dirp, long offset)
 {
-	;
+	struct my_dir *d = dirp;
+	if (offset < d->entries) d->offset = offset;
 }
 
 static long python_telldir(vfs_handle_struct *handle,  DIR *dirp)
 {
-	return (long)-1;
+	struct my_dir *d = dirp;
+	return d->offset;
 }
 
 static void python_rewind_dir(vfs_handle_struct *handle, DIR *dirp)
 {
-	;
+	struct my_dir *d = dirp;
+    d->offset = 0;
 }
 
 static int python_mkdir(vfs_handle_struct *handle,  const char *path, mode_t mode)
@@ -234,8 +333,8 @@ static int python_rmdir(vfs_handle_struct *handle,  const char *path)
 
 static int python_closedir(vfs_handle_struct *handle,  DIR *dir)
 {
-	errno = ENOSYS;
-	return -1;
+    if (dir) SAFE_FREE(dir);
+	return 0;
 }
 
 static void python_init_search_op(struct vfs_handle_struct *handle, DIR *dirp)
@@ -250,6 +349,7 @@ static int python_open(vfs_handle_struct *handle, struct smb_filename *smb_fname
 	return -1;
 }
 
+static int python_stat(vfs_handle_struct *, struct smb_filename *);
 static NTSTATUS python_create_file(struct vfs_handle_struct *handle,
                                 struct smb_request *req,
                                 uint16_t root_dir_fid,
@@ -261,19 +361,210 @@ static NTSTATUS python_create_file(struct vfs_handle_struct *handle,
                                 uint32_t file_attributes,
                                 uint32_t oplock_request,
                                 uint64_t allocation_size,
-				uint32_t private_flags,
+								uint32_t private_flags,
                                 struct security_descriptor *sd,
                                 struct ea_list *ea_list,
                                 files_struct **result,
                                 int *pinfo)
 {
-	return NT_STATUS_NOT_IMPLEMENTED;
+	struct pyfuncs		*pf = handle->data;
+	struct smb_filename	fn;
+	struct files_struct	*fsp;
+	int					stat_result, just_open;
+	PyObject			*pName, *pArgs, *pAccess, *pRet;
+	NTSTATUS			retval = NT_STATUS_NOT_IMPLEMENTED;
+	int					success_info;
+    struct share_mode_lock *lck = NULL;
+    struct timespec mtimespec;
+
+	pRet = NULL;
+	just_open = 0;
+
+	stat_result = smb_fname->st.st_ex_mode > 0 ? 0 : -1;
+
+	if (create_options & FILE_DIRECTORY_FILE) {
+		if (!S_ISDIR(smb_fname->st.st_ex_mode)) return NT_STATUS_NOT_A_DIRECTORY;
+
+		if (!(pArgs = PyTuple_New(2))) return NT_STATUS_NO_MEMORY;
+		if (!(pName = PyString_FromString(smb_fname->base_name))) {
+			Py_DECREF(pArgs);
+			return NT_STATUS_NO_MEMORY;
+		}
+		PyTuple_SetItem(pArgs, 0, pName);
+		if (!(pAccess = PyInt_FromLong(access_mask))) {
+			Py_DECREF(pArgs);
+			return NT_STATUS_NO_MEMORY;
+		}
+		PyTuple_SetItem(pArgs, 1, pAccess);
+	
+		if (create_disposition == FILE_OPEN) {
+			if (stat_result != 0) {
+				Py_DECREF(pArgs);
+				retval = NT_STATUS_OBJECT_NAME_NOT_FOUND;
+				goto cleanup_return;
+			}
+			just_open = 1;
+			success_info = FILE_WAS_OPENED;
+		} else {
+			return NT_STATUS_NOT_IMPLEMENTED;
+		}
+
+	} else if (create_options & FILE_NON_DIRECTORY_FILE == 0) {
+		return NT_STATUS_NOT_IMPLEMENTED;
+
+	} else {
+		if (S_ISDIR(smb_fname->st.st_ex_mode)) return NT_STATUS_FILE_IS_A_DIRECTORY;
+	
+		if (!(pArgs = PyTuple_New(2))) return NT_STATUS_NO_MEMORY;
+		if (!(pName = PyString_FromString(smb_fname->base_name))) {
+			Py_DECREF(pArgs);
+			return NT_STATUS_NO_MEMORY;
+		}
+		PyTuple_SetItem(pArgs, 0, pName);
+		if (!(pAccess = PyInt_FromLong(access_mask))) {
+			Py_DECREF(pArgs);
+			return NT_STATUS_NO_MEMORY;
+		}
+		PyTuple_SetItem(pArgs, 1, pAccess);
+	
+		if (create_disposition == FILE_OPEN) {
+			if (stat_result != 0) {
+				Py_DECREF(pArgs);
+				retval = NT_STATUS_OBJECT_NAME_NOT_FOUND;
+				goto cleanup_return;
+			}
+			just_open = 1;
+			success_info = FILE_WAS_OPENED;
+		} else if (create_disposition == FILE_CREATE) {
+			if (stat_result == 0) {
+				retval = NT_STATUS_OBJECT_NAME_COLLISION;
+				goto cleanup_return;
+			}
+	
+			pRet = PyObject_CallObject(pf->pFuncCreateFile, pArgs);
+			success_info = FILE_WAS_CREATED;
+		} else if (create_disposition == FILE_SUPERSEDE || create_disposition == FILE_OVERWRITE_IF) {
+			if (stat_result == 0) {
+				pRet = PyObject_CallObject(pf->pFuncUnlink, pArgs);
+				if (pRet && PyInt_AsLong(pRet) == 0) {
+					Py_DECREF(pRet);
+					pRet = PyObject_CallObject(pf->pFuncCreateFile, pArgs);
+				}
+				if (create_disposition == FILE_SUPERSEDE) success_info = FILE_WAS_SUPERSEDED;
+				else success_info = FILE_WAS_OVERWRITTEN;
+			} else {
+				pRet = PyObject_CallObject(pf->pFuncCreateFile, pArgs);
+			}
+		} else if (create_disposition == FILE_OVERWRITE) {
+			if (stat_result != 0) {
+				retval = NT_STATUS_OBJECT_NAME_NOT_FOUND;
+				goto cleanup_return;
+			}
+			pRet = PyObject_CallObject(pf->pFuncUnlink, pArgs);
+			if (pRet && PyInt_AsLong(pRet) == 0) {
+				Py_DECREF(pRet);
+				pRet = PyObject_CallObject(pf->pFuncCreateFile, pArgs);
+			}
+			success_info = FILE_WAS_OVERWRITTEN;
+		} else if (create_disposition == FILE_OPEN_IF) {
+			if (stat_result != 0) {
+				pRet = PyObject_CallObject(pf->pFuncCreateFile, pArgs);
+			} else just_open = 1;
+			success_info = FILE_WAS_OPENED;
+		}
+	}
+
+	if (!pRet && !just_open) {
+		fprintf(stderr, "vfs_python: create_file(%i) failed\n", create_disposition);
+		PyErr_Print();
+		retval = NT_STATUS_NOT_IMPLEMENTED;
+		/* Fall through to cleanup_return */
+	} else if (just_open || PyInt_AsLong(pRet) == 0) {
+		if (pRet) Py_DECREF(pRet);
+		pRet = PyObject_CallObject(pf->pFuncOpenFile, pArgs);
+		if (!pRet) goto cleanup_return;
+		if (PyInt_AS_LONG(pRet) != 0) {
+			retval = map_nt_error_from_unix( PyInt_AS_LONG(pRet) );
+			Py_DECREF(pRet);
+			goto cleanup_return;
+		}
+		Py_DECREF(pRet);
+		Py_DECREF(pArgs);
+
+		// XXX it doesn't seem to know what file_new is?
+		file_new(req, handle->conn, result, 1);
+		if (*result == NULL) {
+			return NT_STATUS_NO_MEMORY;
+		}
+		fsp = *result;
+		pinfo = success_info;
+
+		/*
+		* Setup the files_struct for it.
+		*/
+
+		if (stat_result != 0) {
+			memset(&fn, 0, sizeof(fn));
+			fn.base_name = smb_fname->base_name;
+			python_stat(handle, &fn);
+		}
+		
+		fsp->file_id = vfs_file_id_from_sbuf(handle->conn, stat_result ? &smb_fname->st : &fn.st);
+		fsp->vuid = req ? req->vuid : UID_FIELD_INVALID;
+		fsp->file_pid = req ? req->smbpid : 0;
+		fsp->can_lock = False;
+		fsp->can_read = True;
+		fsp->can_write = True;
+		
+		fsp->share_access = share_access;
+		fsp->fh->private_options = 0;
+		/*
+		* According to Samba4, SEC_FILE_READ_ATTRIBUTE is always granted,
+		*/
+		fsp->access_mask = access_mask; // XXX | FILE_READ_ATTRIBUTES;
+		fsp->print_file = NULL;
+		fsp->modified = False;
+		fsp->oplock_type = NO_OPLOCK;
+		fsp->sent_oplock_break = NO_BREAK_SENT;
+		fsp->is_directory = create_options & FILE_DIRECTORY_FILE ? True : False;
+		fsp->posix_open = (file_attributes & FILE_FLAG_POSIX_SEMANTICS) ? True : False;
+
+// it doesn't know what this is XXX
+		retval = fsp_set_smb_fname(fsp, smb_fname);
+		if (!NT_STATUS_IS_OK(retval)) {
+			file_free(req, fsp);
+			return retval;
+		}
+
+		memcpy(fsp->fsp_name, stat_result == 0 ? &smb_fname->st : &fn.st, sizeof(fn));
+
+		mtimespec = smb_fname->st.st_ex_mtime;
+
+// or this XXX
+    	lck = get_share_mode_lock(talloc_tos(), fsp->file_id,
+					handle->conn->connectpath, smb_fname,
+					&mtimespec);
+
+		set_share_mode(lck, fsp, get_current_uid(handle->conn),
+			req ? req->mid : 0, NO_OPLOCK);
+
+		return NT_STATUS_OK;
+	} else {
+		retval = map_nt_error_from_unix(PyInt_AS_LONG(pRet));
+		Py_DECREF(pRet);
+		/* Fall through to cleanup_return */
+	}
+
+cleanup_return:
+	Py_DECREF(pArgs);
+	return retval;
 }
 
 static int python_close_fn(vfs_handle_struct *handle, files_struct *fsp)
 {
-	errno = ENOSYS;
-	return -1;
+	// TODO tell python
+	fsp_free(fsp);
+	return 0;
 }
 
 static ssize_t python_vfs_read(vfs_handle_struct *handle, files_struct *fsp, void *data, size_t n)
@@ -382,6 +673,7 @@ static int python_stat(vfs_handle_struct *handle, struct smb_filename *smb_fname
 	PyObject *pArgs, *pValue, *pRet;
 	struct pyfuncs *pf = handle->data;
 	long v;
+	long long vv;
 
 	/* We don't support streams (yet?) */
     if (smb_fname->stream_name) {
@@ -389,19 +681,36 @@ static int python_stat(vfs_handle_struct *handle, struct smb_filename *smb_fname
 		return -1;
     }
 
-	if (!(pArgs = PyString_FromString(smb_fname->base_name))) {
-		errno = ENOSYS;
+	pArgs = PyTuple_New(1);
+	if (!pArgs) {
+		errno = E_INTERNAL;
 		return -1;
 	}
 
-	pRet = PyObject_CallObject(pf->pFuncConnect, pArgs);
+	if (!(pValue = PyString_FromString(smb_fname->base_name))) {
+		Py_DECREF(pArgs);
+		errno = E_INTERNAL;
+		return -1;
+	}
+
+	PyTuple_SetItem(pArgs, 0, pValue);
+
+	pRet = PyObject_CallObject(pf->pFuncStat, pArgs);
 	Py_DECREF(pArgs);
 
 	if (!pRet) {
+		fprintf(stderr, "vfs_python: getattr() failed.\n");
 		PyErr_Print();
 		errno = ENOSYS;
 		return -1;
 	}
+
+	if (!PyMapping_Check(pRet)) {
+		Py_DECREF(pRet);
+		errno = ENOENT;
+		return -1;
+	}
+
 /*
 struct stat_ex {
     dev_t       st_ex_dev;
@@ -436,60 +745,49 @@ struct stat_ex {
 
 #define VFS_PY_STAT_VALUE(_name, _member, _default) \
 	if ((pValue = PyMapping_GetItemString(pRet, _name))) { \
-		smb_fname->st.##_member = PyInt_AsLong(pValue); \
+		smb_fname->st. _member = PyInt_AsUnsignedLongLongMask(pValue); \
 		Py_DECREF(pValue); \
 	} else { \
-		smb_fname->st.##_member = 0; \
+		smb_fname->st. _member = _default; \
 	}
 
 #define VFS_PY_STAT_TIMESPEC_VALUE(_name, _member) \
 	do { \
-		VFS_PY_STAT_VALUE(_name, _member##.tv_sec, 0); \
-		smb_fname->st.##member.tv_nsec = 0; \
+		VFS_PY_STAT_VALUE(_name, _member .tv_sec, 0); \
+		smb_fname->st. _member .tv_nsec = 0; \
 	} while(0);
 
 #define VFS_PY_STAT_LONG(_name, _value) \
 	do { \
 		v = 0; \
 		if ((pValue = PyMapping_GetItemString(pRet, _name))) { \
-			_value = PyInt_AsLong(pValue); \
+			_value = PyInt_AsUnsignedLongLongMask(pValue); \
 			Py_DECREF(pValue); \
 		} \
 	} while(0);
 
-	VFS_PY_STAT_VALUE("dev", st_ex_dev, 1);
-	VFS_PY_STAT_VALUE("ino", st_ex_ino, 1);
-	VFS_PY_STAT_VALUE("nlink", st_ex_nlink, 1);
-	VFS_PY_STAT_VALUE("uid", st_ex_uid, 0);
-	VFS_PY_STAT_VALUE("gid", st_ex_gid, 0);
-	VFS_PY_STAT_VALUE("rdev", st_ex_gid, 1);
-	VFS_PY_STAT_VALUE("size", st_ex_size, 0);
-	VFS_PY_STAT_VALUE("blksize", st_ex_blksize, 512);
+	VFS_PY_STAT_VALUE("st_dev", st_ex_dev, 1);
+	VFS_PY_STAT_VALUE("st_ino", st_ex_ino, 1);
+	VFS_PY_STAT_VALUE("st_nlink", st_ex_nlink, 1);
+	VFS_PY_STAT_VALUE("st_uid", st_ex_uid, 0);
+	VFS_PY_STAT_VALUE("st_gid", st_ex_gid, 0);
+	VFS_PY_STAT_VALUE("st_rdev", st_ex_gid, 1);
+	VFS_PY_STAT_VALUE("st_size", st_ex_size, 0);
+	VFS_PY_STAT_VALUE("st_blksize", st_ex_blksize, 512);
+	VFS_PY_STAT_VALUE("st_mode", st_ex_mode, 0);
 
-	if (PyMapping_HasKeyString("mode")) {
-		VFS_PY_STAT_VALUE("mode", st_ex_mode, 0);
+	if (PyMapping_HasKeyString(pRet, "st_blocks")) {
+		VFS_PY_STAT_VALUE("st_blocks", st_ex_blocks, 0);
 	} else {
-		VFS_PY_STAT_LONG("is_directory", v);
-		if (v) smb_fname->st.st_ex_mode = S_IFDIR;
-		else smb_fname->st.st_ex_mode = S_IFREG;
-
-		VFS_PY_STAT_LONG("permissions", v);
-		smb_fname->st.st_ex_mode |= v;
+		smb_fname->st.st_ex_blocks = smb_fname->st.st_ex_size / 512;
+		if (smb_fname->st.st_ex_size % 512) smb_fname->st.st_ex_blocks++;
 	}
 
-	if (PyMapping_HasKeyString("blocks")) {
-		VFS_PY_STAT_VALUE("blocks", st_ex_blocks, 0);
-	} else {
-		smb_fname->st.st_ex_blocks = smb_fname->st.st_ex_size / smb_fname->st.st_ex_blksize;
-		if (smb_fname->st.st_ex_size % smb_fname->st.st_ex_blksize)
-			smb_fname->st.st_ex_blocks++;
-	}
-
-	VFS_PY_STAT_TIMESPEC_VALUE("atime", st_ex_atime);
-	VFS_PY_STAT_TIMESPEC_VALUE("mtime", st_ex_mtime);
-	VFS_PY_STAT_TIMESPEC_VALUE("ctime", st_ex_ctime);
-	if (PyMapping_HasKeyString("btime")) {
-		VFS_PY_STAT_TIMESPEC_VALUE("btime", st_ex_btime);
+	VFS_PY_STAT_TIMESPEC_VALUE("st_atime", st_ex_atime);
+	VFS_PY_STAT_TIMESPEC_VALUE("st_mtime", st_ex_mtime);
+	VFS_PY_STAT_TIMESPEC_VALUE("st_ctime", st_ex_ctime);
+	if (PyMapping_HasKeyString(pRet, "st_btime")) {
+		VFS_PY_STAT_TIMESPEC_VALUE("st_btime", st_ex_btime);
 	} else {
 		smb_fname->st.st_ex_btime.tv_sec = smb_fname->st.st_ex_ctime.tv_sec;
 		smb_fname->st.st_ex_btime.tv_nsec = 0;
@@ -498,7 +796,7 @@ struct stat_ex {
 	smb_fname->st.st_ex_flags = 0;
 	smb_fname->st.st_ex_mask = 0;
 	smb_fname->st.vfs_private = 0;
-	smb_fname->st.calculated_birthtime = 0;
+	smb_fname->st.st_ex_calculated_birthtime = 0;
 
 	Py_DECREF(pRet);
 	return 0;
@@ -518,8 +816,11 @@ static int python_lstat(vfs_handle_struct *handle, struct smb_filename *smb_fnam
 
 static uint64_t python_get_alloc_size(struct vfs_handle_struct *handle, struct files_struct *fsp, const SMB_STRUCT_STAT *sbuf)
 {
-	errno = ENOSYS;
-	return -1;
+    if(S_ISDIR(sbuf->st_ex_mode)) {
+        return 0;
+    }
+
+	return sbuf->st_ex_size;
 }
 
 static int python_unlink(vfs_handle_struct *handle,
@@ -561,14 +862,29 @@ static int python_lchown(vfs_handle_struct *handle,  const char *path, uid_t uid
 
 static int python_chdir(vfs_handle_struct *handle,  const char *path)
 {
-	errno = ENOSYS;
-	return -1;
+	struct pyfuncs *pf = handle->data;
+	struct smb_filename fn;
+	int r;
+	memset(&fn, 0, sizeof(fn));
+
+	fn.base_name = path;
+	r = python_stat(handle, &fn);
+
+	if (r == 0) {
+		strncpy(&pf->cwd[0], path, sizeof(pf->cwd[0]));
+		pf->cwd[sizeof(pf->cwd) - 1] = '\0';
+	}
+	return r;
 }
 
+/* Must return a pointer to memory that can be deallocated with SAFE_FREE() */
 static char *python_getwd(vfs_handle_struct *handle)
 {
-	errno = ENOSYS;
-	return NULL;
+	struct pyfuncs *pf = handle->data;
+	int bufsz = strlen(pf->cwd) + 1;
+	char *r = SMB_MALLOC(bufsz);
+	if (r) strncpy(r, pf->cwd, bufsz);
+	return r;
 }
 
 static int python_ntimes(vfs_handle_struct *handle,
@@ -643,11 +959,24 @@ static int python_mknod(vfs_handle_struct *handle,  const char *path, mode_t mod
 
 static char *python_realpath(vfs_handle_struct *handle,  const char *path)
 {
-#define FAKE_REALPATH "/__vfs_python/"
+#define FAKE_REALPATH "/"
     char *p;
-    p = malloc(sizeof(FAKE_REALPATH) + strlen(path));
-    strncpy(p, FAKE_REALPATH, sizeof(FAKE_REALPATH) - 1);
-    strncpy(p, FAKE_REALPATH + sizeof(FAKE_REALPATH) - 1, strlen(path) + 1);
+	int offset = 0;
+	int bufsz = sizeof(FAKE_REALPATH) + strlen(path); 
+
+    p = SMB_MALLOC(bufsz);
+	if (!p) {
+		errno = ENOMEM;
+		return NULL;
+	}
+    strncpy(p, FAKE_REALPATH, bufsz);
+
+	if (strcmp(path, ".") == 0) return p;
+
+	if (path[0] == '/') offset = 1;
+
+    strncpy(p + sizeof(FAKE_REALPATH) - 1, path + offset, bufsz - sizeof(FAKE_REALPATH) - 1);
+	p[bufsz - 1] = '\0';
 	return p;
 }
 
@@ -673,7 +1002,10 @@ static struct file_id python_file_id_create(vfs_handle_struct *handle,
 {
 	struct file_id id;
 	ZERO_STRUCT(id);
-	errno = ENOSYS;
+
+    id.devid = sbuf->st_ex_dev;
+    id.inode = sbuf->st_ex_ino;
+
 	return id;
 }
 
@@ -700,8 +1032,7 @@ static int python_get_real_filename(struct vfs_handle_struct *handle,
 static const char *python_connectpath(struct vfs_handle_struct *handle,
 				const char *filename)
 {
-	errno = ENOSYS;
-	return NULL;
+	return handle->conn->connectpath;
 }
 
 static NTSTATUS python_brl_lock_windows(struct vfs_handle_struct *handle,

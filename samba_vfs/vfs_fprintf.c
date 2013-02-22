@@ -485,7 +485,7 @@ static char *skel_realpath(vfs_handle_struct *handle,  const char *path)
     char *p;
 	fprintf(stderr, "In skel_realpath\n");
     p = malloc(sizeof(FAKE_REALPATH));
-    strncpy(p, FAKE_REALPATH, sizeof(FAKE_REALPATH) - 1);
+    strncpy(p, FAKE_REALPATH, sizeof(FAKE_REALPATH));
 	return p;
 }
 
