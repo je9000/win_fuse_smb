@@ -165,48 +165,31 @@ def handle_icmp(pcap, wire_packet, ip):
 
 		pcap_sendpacket(pcap, cast(reply.get_packet(), POINTER(u_char)), reply.get_size())
 
-def handle_tcp2(pcap, wire_packet, ip):
-	tcp = ip.child()
-	if (	tcp.get_th_dport() == REFLECT_PORT
-		 or tcp.get_th_sport() == REFLECT_PORT_TO
-	):
-		reply = build_ethernet_reply( wire_packet, ImpactPacket.IP.ethertype )
-		ip_reply = build_ip_reply( ip, ImpactPacket.TCP.protocol )
-
-		if tcp.get_th_dport() == REFLECT_PORT:
-			tcp.set_th_dport( REFLECT_PORT_TO )
-		else:
-			tcp.set_th_sport( REFLECT_PORT )
-
-		ip_reply.contains( tcp )
-		reply.contains( ip_reply )
-		pcap_sendpacket(pcap, cast(reply.get_packet(), POINTER(u_char)), reply.get_size())
-
 def handle_tcp(pcap, wire_packet, ip):
 	tcp = ip.child()
 	if (	REFLECT_MAP.has_key(tcp.get_th_dport())
 		 or REFLECT_MAP_TO.has_key(tcp.get_th_sport())
 	):
-		global reply
-		if not reply :
-			reply = build_ethernet_reply( wire_packet, ImpactPacket.IP.ethertype )
+                global reply
+                if not reply :
+                        reply = build_ethernet_reply( wire_packet, ImpactPacket.IP.ethertype )
 
-		ip_reply = build_ip_reply( ip, ImpactPacket.TCP.protocol )
+                ip_reply = build_ip_reply( ip, ImpactPacket.TCP.protocol )
 
-		if REFLECT_MAP.has_key(tcp.get_th_dport()):
-			tcp.set_th_dport( REFLECT_PORT_TO )
-		else:
-			tcp.set_th_sport( REFLECT_PORT )
+                if REFLECT_MAP.has_key(tcp.get_th_dport()):
+                        tcp.set_th_dport( REFLECT_PORT_TO )
+                else:
+                        tcp.set_th_sport( REFLECT_PORT )
 
-		ip_reply.contains( tcp )
-		reply.contains( ip_reply )
-		pcap_sendpacket(pcap, cast(reply.get_packet(), POINTER(u_char)), reply.get_size())
+                ip_reply.contains( tcp )
+                reply.contains( ip_reply )
+                pcap_sendpacket(pcap, cast(reply.get_packet(), POINTER(u_char)), reply.get_size())
 
 
 ## Retrieve the packets
 res = 1
 while(res >= 0):
-	res=pcap_next_ex( adhandle, byref(header), byref(pkt_data))
+	res=pcap_next_ex(adhandle, byref(header), byref(pkt_data))
 	if(res == 0):
 		# Timeout elapsed
 		continue

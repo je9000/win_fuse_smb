@@ -29,7 +29,8 @@
 #include <dirent.h>
 #include <Python.h>
 
-#define E_INTERNAL ENOMEM
+#define E_INTERNAL EIO
+#define PY_MAXPATH 256
 
 /* PLEASE,PLEASE READ THE VFS MODULES CHAPTER OF THE 
    SAMBA DEVELOPERS GUIDE!!!!!!
@@ -53,13 +54,23 @@
 	} \
 	PyTuple_SetItem(pArgs, pos, pValue);
 
-#define PY_CALL_WITH_ARGS(func) \
+#define PY_CALL_WITH_ARGS_RET(func, ret) \
 	pRet = PyObject_CallObject(pf->pFunc##func, pArgs); \
 	Py_DECREF(pArgs); \
 	if (!pRet) { \
+        if (PyErr_Occurred()) { \
+            fprintf(stderr, "vfs_python: Error in " #func "\n"); \
+            PyErr_Print(); \
+        } \
         errno = E_INTERNAL; \
-        return -1; \
+        return ret; \
+    } else if (pRet == Py_None) { \
+        if (pf->pErrno) errno = PyInt_AS_LONG(pf->pErrno); \
+        else errno = E_INTERNAL; \
+        return ret; \
     }
+
+#define PY_CALL_WITH_ARGS(func) PY_CALL_WITH_ARGS_RET(func, -1)
 
 struct my_dir {
     long			offset; 
@@ -84,8 +95,16 @@ struct pyfuncs {
     PyObject	*pFuncMkDir;
     PyObject	*pFuncRename;
     PyObject	*pFuncDiskFree;
-	char		cwd[255]; // MAXPATH?
+    PyObject	*pErrno;
+	char		cwd[PY_MAXPATH];
 };
+
+static const char *make_full_path(vfs_handle_struct *handle, const char *path, char *buf)
+{
+    if (path[0] == '/') return path;
+    snprintf(buf, PY_MAXPATH, "%s/%s", handle->conn->cwd ? handle->conn->cwd : "", path);
+    return buf;
+}
 
 static void free_python_data(void **data)
 {
@@ -94,9 +113,10 @@ static void free_python_data(void **data)
 
 static int python_connect(vfs_handle_struct *handle,  const char *service, const char *user)    
 {
-	PyObject *pName, *pArgs, *pValue;
+	PyObject *pRet, *pArgs, *pValue;
     const char *pysource;
     struct pyfuncs *pf;
+    int i;
 
     pf = SMB_MALLOC_P(struct pyfuncs);
     if (!pf) {
@@ -116,9 +136,9 @@ static int python_connect(vfs_handle_struct *handle,  const char *service, const
 		return -1;
     }
 
-	pName = PyString_FromString(pysource);
-	pf->pModule = PyImport_Import(pName);
-	Py_DECREF(pName);
+	pArgs = PyString_FromString(pysource);
+	pf->pModule = PyImport_Import(pArgs);
+	Py_DECREF(pArgs);
 
 	if (!pf->pModule) {
 		fprintf(stderr, "Failed to load module '%s', make sure %s.py exists in a directory in the PYTHONPATH environment variable.\n", pysource, pysource);
@@ -131,7 +151,7 @@ static int python_connect(vfs_handle_struct *handle,  const char *service, const
 	pf->pFunc##_member = PyObject_GetAttrString(pf->pModule, _name); \
 	if (!pf->pFunc##_member || !PyCallable_Check(pf->pFunc##_member)) { \
         if (pf->pFunc##_member) Py_DECREF(pf->pFunc##_member); \
-		fprintf(stderr, "%s function not found or not callable\n", _name); \
+		fprintf(stderr, "vfs_python: %s function not found or not callable\n", _name); \
         errno = E_INTERNAL; \
 		return -1; \
 	}
@@ -147,7 +167,15 @@ static int python_connect(vfs_handle_struct *handle,  const char *service, const
 		pf->pFunc##_member = NULL; \
 	}
 
-    VFS_PY_REQUIRED_MODULE_FUNC(Stat, "getattr");
+	pf->pErrno = PyObject_GetAttrString(pf->pModule, "vfs_errno");
+	if (pf->pErrno && !PyInt_Check(pf->pErrno)) {
+        Py_DECREF(pf->pErrno);
+		fprintf(stderr, "vfs_python: vfs_errno global variable not an int\n");
+        errno = E_INTERNAL;
+		return -1;
+	}
+
+    VFS_PY_REQUIRED_MODULE_FUNC(Stat, "stat");
     VFS_PY_REQUIRED_MODULE_FUNC(FStat, "fstat");
     VFS_PY_REQUIRED_MODULE_FUNC(GetDir, "getdir");
     VFS_PY_REQUIRED_MODULE_FUNC(OpenFile, "open");
@@ -195,18 +223,12 @@ static int python_connect(vfs_handle_struct *handle,  const char *service, const
 			return -1;
 		}
 		PyTuple_SetItem(pArgs, 1, pValue);
+
+        PY_CALL_WITH_ARGS(Connect);
 	
-		pValue = PyObject_CallObject(pf->pFuncConnect, pArgs);
-		Py_DECREF(pArgs);
-	
-		if (pValue) {
-			Py_DECREF(pValue);
-			return (int) PyInt_AS_LONG(pValue);
-		}
-		fprintf(stderr, "vfs_python: connect() failed\n");
-		PyErr_Print();
-		errno = E_INTERNAL;
-		return -1;
+		i = PyInt_AS_LONG(pValue);
+		Py_DECREF(pRet);
+		return i;
     }
     return 0;
 }
@@ -325,15 +347,7 @@ static DIR *python_opendir(vfs_handle_struct *handle,  const char *fname, const 
 	}
 	PyTuple_SetItem(pArgs, 0, pValue);
 
-	pRet = PyObject_CallObject(pf->pFuncGetDir, pArgs);
-	Py_DECREF(pArgs);
-
-	if (!pRet) {
-		fprintf(stderr, "vfs_python: getdir() failed\n");
-		PyErr_Print();
-		errno = ENOSYS;
-		return NULL;
-	}
+    PY_CALL_WITH_ARGS_RET(GetDir, NULL);
 
 	if (!PySequence_Check(pRet)) {
 		fprintf(stderr, "getdir did not return a sequence object!\n");
@@ -419,6 +433,8 @@ static int python_mkdir(vfs_handle_struct *handle,  const char *path, mode_t mod
 {
 	struct pyfuncs *pf = handle->data;
     PyObject *pArgs, *pRet, *pValue;   
+    char full_path_buf[PY_MAXPATH];
+    const char *full_path;
     int i;
 
     if (!pf->pFuncMkDir) {
@@ -427,7 +443,8 @@ static int python_mkdir(vfs_handle_struct *handle,  const char *path, mode_t mod
     }
 
     PY_TUPLE_NEW(2);
-    PY_ADD_TO_TUPLE(path, PyString_FromString, 0);
+    full_path = make_full_path(handle, path, (char *) &full_path_buf);
+    PY_ADD_TO_TUPLE((char *) &full_path_buf, PyString_FromString, 0);
     PY_ADD_TO_TUPLE(mode, PyInt_FromLong, 1);
     PY_CALL_WITH_ARGS(MkDir);
 
@@ -442,7 +459,7 @@ static int python_rmdir(vfs_handle_struct *handle,  const char *path)
 {
     struct smb_filename fn;
     memset(&fn, 0, sizeof(fn));
-    fn.base_name = path;
+    fn.base_name = (char *) path;
 	return python_unlink(handle, &fn);
 }
 
@@ -462,13 +479,15 @@ static int python_open(vfs_handle_struct *handle, struct smb_filename *smb_fname
 {
 	struct pyfuncs *pf = handle->data;
     PyObject *pArgs, *pRet, *pValue;   
+    char full_path_buf[PY_MAXPATH];
+    const char *full_path;
     int r;
 
-    PY_TUPLE_NEW(4);
-    PY_ADD_TO_TUPLE(handle->conn->cwd, PyString_FromString, 0);
-    PY_ADD_TO_TUPLE(smb_fname->base_name, PyString_FromString, 1);
-    PY_ADD_TO_TUPLE(flags, PyInt_FromLong, 2);
-    PY_ADD_TO_TUPLE(mode, PyInt_FromLong, 3);
+    PY_TUPLE_NEW(3);
+    full_path = make_full_path(handle, smb_fname->base_name, (char *) &full_path_buf);
+    PY_ADD_TO_TUPLE((char *) &full_path_buf, PyString_FromString, 0);
+    PY_ADD_TO_TUPLE(flags, PyInt_FromLong, 1);
+    PY_ADD_TO_TUPLE(mode, PyInt_FromLong, 2);
     PY_CALL_WITH_ARGS(OpenFile);
 
 	if (PyInt_AS_LONG(pRet) < 0) {
@@ -759,6 +778,8 @@ static int python_rename(vfs_handle_struct *handle,
 {
 	struct pyfuncs *pf = handle->data;
     PyObject *pArgs, *pRet, *pValue;   
+    char full_path_buf[PY_MAXPATH];
+    const char *full_path;
     int i;
 
     if (!pf->pFuncRename) {
@@ -766,10 +787,11 @@ static int python_rename(vfs_handle_struct *handle,
         return -1;
     }
 
-    PY_TUPLE_NEW(3);
-    PY_ADD_TO_TUPLE(handle->conn->cwd, PyString_FromString, 0);
-    PY_ADD_TO_TUPLE(smb_fname_src->base_name, PyString_FromString, 1);
-    PY_ADD_TO_TUPLE(smb_fname_dst->base_name, PyString_FromString, 2);
+    PY_TUPLE_NEW(2);
+    full_path = make_full_path(handle, smb_fname_src->base_name, (char *) &full_path_buf);
+    PY_ADD_TO_TUPLE((char *) &full_path_buf, PyString_FromString, 0);
+    full_path = make_full_path(handle, smb_fname_dst->base_name, (char *) &full_path_buf);
+    PY_ADD_TO_TUPLE((char *) &full_path_buf, PyString_FromString, 1);
     PY_CALL_WITH_ARGS(Rename);
 
     i = PyInt_AsLong(pRet);
@@ -843,7 +865,7 @@ struct stat_ex {
 
 #define VFS_PY_STAT_TIMESPEC_VALUE(_name, _member) \
 	do { \
-		VFS_PY_STAT_VALUE(_name, _member .tv_sec, 0); \
+		VFS_PY_STAT_VALUE(_name, _member .tv_sec, 1); \
 		st-> _member .tv_nsec = 0; \
 	} while(0);
 
@@ -892,10 +914,12 @@ struct stat_ex {
 	return 0;
 }
 
-static int python_stat(vfs_handle_struct *handle, struct smb_filename *smb_fname)
+static int python_stat_or_lstat(vfs_handle_struct *handle, struct smb_filename *smb_fname, long do_lstat)
 {
 	PyObject *pArgs, *pValue, *pRet;
 	struct pyfuncs *pf = handle->data;
+    char full_path_buf[PY_MAXPATH];
+    const char *full_path;
 
 	/* We don't support streams (yet?) */
     if (smb_fname->stream_name) {
@@ -903,29 +927,11 @@ static int python_stat(vfs_handle_struct *handle, struct smb_filename *smb_fname
 		return -1;
     }
 
-	pArgs = PyTuple_New(1);
-	if (!pArgs) {
-		errno = E_INTERNAL;
-		return -1;
-	}
-
-	if (!(pValue = PyString_FromString(smb_fname->base_name))) {
-		Py_DECREF(pArgs);
-		errno = E_INTERNAL;
-		return -1;
-	}
-
-	PyTuple_SetItem(pArgs, 0, pValue);
-
-	pRet = PyObject_CallObject(pf->pFuncStat, pArgs);
-	Py_DECREF(pArgs);
-
-	if (!pRet) {
-		fprintf(stderr, "vfs_python: getattr() failed.\n");
-		PyErr_Print();
-		errno = ENOSYS;
-		return -1;
-	}
+    PY_TUPLE_NEW(2);
+    full_path = make_full_path(handle, smb_fname->base_name, (char *) &full_path_buf);
+    PY_ADD_TO_TUPLE(full_path, PyString_FromString, 0);
+    PY_ADD_TO_TUPLE(do_lstat, PyInt_FromLong, 1);
+    PY_CALL_WITH_ARGS(Stat);
 
 	if (!PyMapping_Check(pRet)) {
 		Py_DECREF(pRet);
@@ -936,34 +942,19 @@ static int python_stat(vfs_handle_struct *handle, struct smb_filename *smb_fname
     return python_stat_helper(pRet, &smb_fname->st);
 }
 
+static int python_stat(vfs_handle_struct *handle, struct smb_filename *smb_fname)
+{
+    return python_stat_or_lstat(handle, smb_fname, 0);
+}
+
 static int python_fstat(vfs_handle_struct *handle, files_struct *fsp, SMB_STRUCT_STAT *sbuf)
 {
 	PyObject *pArgs, *pValue, *pRet;
 	struct pyfuncs *pf = handle->data;
 
-	pArgs = PyTuple_New(1);
-	if (!pArgs) {
-		errno = E_INTERNAL;
-		return -1;
-	}
-
-	if (!(pValue = PyInt_FromSsize_t(fsp->fh->fd))) {
-		Py_DECREF(pArgs);
-		errno = E_INTERNAL;
-		return -1;
-	}
-
-	PyTuple_SetItem(pArgs, 0, pValue);
-
-	pRet = PyObject_CallObject(pf->pFuncFStat, pArgs);
-	Py_DECREF(pArgs);
-
-	if (!pRet) {
-		fprintf(stderr, "vfs_python: fstat() failed.\n");
-		PyErr_Print();
-		errno = ENOSYS;
-		return -1;
-	}
+    PY_TUPLE_NEW(1);
+    PY_ADD_TO_TUPLE(fsp->fh->fd, PyInt_FromSsize_t, 0);
+    PY_CALL_WITH_ARGS(FStat);
 
 	if (!PyMapping_Check(pRet)) {
 		Py_DECREF(pRet);
@@ -976,8 +967,7 @@ static int python_fstat(vfs_handle_struct *handle, files_struct *fsp, SMB_STRUCT
 
 static int python_lstat(vfs_handle_struct *handle, struct smb_filename *smb_fname)
 {
-	errno = ENOSYS;
-	return -1;
+    return python_stat_or_lstat(handle, smb_fname, 1);
 }
 
 static uint64_t python_get_alloc_size(struct vfs_handle_struct *handle, struct files_struct *fsp, const SMB_STRUCT_STAT *sbuf)
@@ -994,6 +984,8 @@ static int python_unlink(vfs_handle_struct *handle,
 {
 	struct pyfuncs *pf = handle->data;
     PyObject *pArgs, *pRet, *pValue;   
+    char full_path_buf[PY_MAXPATH];
+    const char *full_path;
     int i;
 
     if (!pf->pFuncUnlink) {
@@ -1001,9 +993,9 @@ static int python_unlink(vfs_handle_struct *handle,
         return -1;
     }
 
-    PY_TUPLE_NEW(2);
-    PY_ADD_TO_TUPLE(handle->conn->cwd, PyString_FromString, 0);
-    PY_ADD_TO_TUPLE(smb_fname->base_name, PyString_FromString, 1);
+    PY_TUPLE_NEW(1);
+    full_path = make_full_path(handle, smb_fname->base_name, (char *) &full_path_buf);
+    PY_ADD_TO_TUPLE(full_path, PyString_FromString, 0);
     PY_CALL_WITH_ARGS(Unlink);
 
     i = PyInt_AsLong(pRet);
@@ -1143,6 +1135,11 @@ static int python_mknod(vfs_handle_struct *handle,  const char *path, mode_t mod
 
 static char *python_realpath(vfs_handle_struct *handle,  const char *path)
 {
+    /*
+     * TODO I don't think this is really correct, it just returns every path
+     * as if it were valid. It seems to work in practice but we could pass it
+     * up to Python to compress the path? Or should we just call stat?
+     */
 #define FAKE_REALPATH "/"
     char *p;
 	int offset = 0;
@@ -1503,7 +1500,7 @@ struct vfs_fn_pointers python_opaque_fns = {
 	.readlink_fn = python_vfs_readlink,
 	.link_fn = python_link,
 	.mknod_fn = python_mknod,
-	//.realpath_fn = python_realpath,
+	.realpath_fn = python_realpath,
 	.notify_watch_fn = python_notify_watch,
 	.chflags_fn = python_chflags,
 	//.file_id_create_fn = python_file_id_create,

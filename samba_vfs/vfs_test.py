@@ -8,6 +8,8 @@ root['testfile1'] = bytearray("file 1 data");
 root['testfile2'] = bytearray("file 2 data");
 root['testdir'] = { "testdirfile1" : bytearray("test dir file 1") }
 
+#vfs_errno = 0
+
 fd = 0
 fdmap = {}
 
@@ -45,8 +47,8 @@ def connect(service, user):
     print >> sys.stderr, "Someone connected! Service = %s, User = %s" % ( service, user )
     return 0
 
-def getdir(a):
-    found = find_node(a)
+def getdir(path):
+    found = find_node(path)
     if not found or type(found) is not dict: return -1
     return found.keys()
 
@@ -54,55 +56,53 @@ def fstat(fd):
     global fdmap
     print >> sys.stderr, "Being asked fstat for %i" % fd
     if fdmap.has_key(fd):
-        return getattr(fdmap[fd]['name'])
+        return stat(fdmap[fd]['name'], 0)
     return -1
 
-def getattr(a):
-    print >> sys.stderr, "Got a call to getattr for ->%s<-" % a
-    node = find_node(a)
+def stat(path, do_lstat):
+    print >> sys.stderr, "Got a call to stat for %s (lstat is %i)" % ( path, do_lstat )
+    node = find_node(path)
     if node is not None:
         if type(node) is bytearray:
             return { "st_mode": 0777, "st_ino": id(node), "st_size": len(node) }
         return { "st_mode": 0040000 | 0777, "st_ino": id(node) }
     return -1
 
-def close(a):
+def close(path):
     global fdmap
-    print >> sys.stderr, "Got close for fd %i" % a
-    if fdmap.has_key(a):
-        del fdmap[a]
+    print >> sys.stderr, "Got close for fd %i" % path
+    if fdmap.has_key(path):
+        del fdmap[path]
         return 0
     return -1
 
-def open(cwd, a, b, c):
+def open(path, flags, mode):
     global fd
     global fdmap
-    print >> sys.stderr, "Got a call to open for %s in cwd %s" % (a,cwd)
-    a = cwd + '/' + a
+    print >> sys.stderr, "Got a call to open for %s" % path
     # existing
-    node = find_node(a)
+    node = find_node(path)
     if node is not None:
         fd = fd + 1
-        fdmap[fd] = { 'name': a, 'off': 0 }
-        print >> sys.stderr, "Opened %s at fd %i" % (a,fd)
+        fdmap[fd] = { 'name': path, 'off': 0 }
+        print >> sys.stderr, "Opened %s at fd %i" % (path,fd)
         return fd
     # new
-    parent = find_parent(a)
+    parent = find_parent(path)
     if parent is not None:
-        fname = basename(a)
+        fname = basename(path)
         parent[fname] = bytearray()
         fd = fd + 1
-        fdmap[fd] = { 'name': a, 'off': 0 }
-        print >> sys.stderr, "Created %s at fd %i" % (a,fd)
+        fdmap[fd] = { 'name': path, 'off': 0 }
+        print >> sys.stderr, "Created %s at fd %i" % (path,fd)
         return fd
     return -1
 
-def unlink(a):
+def unlink(path):
     global root
     print >> sys.stderr, "Got a call to unlink for %s" % a
-    node = find_node(a)
-    if node is None: return -1
-    del find_parent(a)[basename(a)];
+    if find_node(path) is None: return -1
+    del find_parent(path)[basename(path)];
     return 0
 
 def read(fd, size):
@@ -122,7 +122,7 @@ def read(fd, size):
 
 def write(fd, data):
     global fdmap
-    print >> sys.stderr, "Got a call to write for fd %i size %i" % ( fd, len(data) )
+    #print >> sys.stderr, "Got a call to write for fd %i size %i" % ( fd, len(data) )
     try:
         fdinfo = fdmap[fd]
         node = find_node(fdinfo['name'])
@@ -134,9 +134,23 @@ def write(fd, data):
         print >> sys.stderr, "Write returning -1 because of ", e
         return -1
 
+def pwrite(fd, data, offset):
+    global fdmap
+    #print >> sys.stderr, "Got a call to write for fd %i size %i" % ( fd, len(data) )
+    try:
+        fdinfo = fdmap[fd]
+        node = find_node(fdinfo['name'])
+        node[offset : offset + len(data)] = data
+        return len(data)
+
+    except Exception as e:
+        print >> sys.stderr, "Write returning -1 because of ", e
+        return -1
+
+
 def lseek(fd, where, whence):
     global fdmap
-    print >> sys.stderr, "Got a call to lseek for fd %i" % fd
+    #print >> sys.stderr, "Got a call to lseek for fd %i" % fd
     try:
         fdinfo = fdmap[fd]
         node = find_node(fdinfo['name'])
@@ -158,27 +172,24 @@ def lseek(fd, where, whence):
 def diskfree(path):
     return { "size": 1024*1024*1024*10, "used": 2048 }
 
-def mkdir(cwd, path):
-    global fd
-    global fdmap
-    print >> sys.stderr, "Got a call to mkdir for %s in cwd %s" % (path,cwd)
-    path = cwd + '/' + path
+def mkdir(path, mode):
+    print >> sys.stderr, "Got a call to mkdir for %s" % path
     # existing
-    if find_node(a) is not None: return -1
+    if find_node(path) is not None:
+        print >> sys.stderr, "mkdir path is not None"
+        return -1
     # new
-    parent = find_parent(a)
+    parent = find_parent(path)
     if parent is not None:
-        fname = basename(a)
-        parent[fname] = new_dir(parent)
+        parent[basename(path)] = new_dir(parent)
         print >> sys.stderr, "Created directory %s" % path
         return 0
+    print >> sys.stderr, "mkdir parent is None"
     return -1
 
 
-def unlink(cwd, path):
-    global fdmap
-    print >> sys.stderr, "Got a call to unlink for %s in %s" % ( path, cwd )
-    path = cwd + '/' + path
+def unlink(path):
+    print >> sys.stderr, "Got a call to unlink for %s" % path
     try:
         parent = find_parent(path)
         del parent[basename(path)]
