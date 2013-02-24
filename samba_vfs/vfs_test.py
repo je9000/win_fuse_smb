@@ -11,6 +11,12 @@ root['testdir'] = { "testdirfile1" : bytearray("test dir file 1") }
 fd = 0
 fdmap = {}
 
+def new_dir(parent):
+    t = {}
+    t['.'] = t
+    t['..'] = parent
+    return t
+
 def find_node_or_parent(path, parent):
     global root
     currently_at = start_at = root
@@ -149,3 +155,34 @@ def lseek(fd, where, whence):
         print >> sys.stderr, "lseek returning -1"
         return -1
 
+def diskfree(path):
+    return { "size": 1024*1024*1024*10, "used": 2048 }
+
+def mkdir(cwd, path):
+    global fd
+    global fdmap
+    print >> sys.stderr, "Got a call to mkdir for %s in cwd %s" % (path,cwd)
+    path = cwd + '/' + path
+    # existing
+    if find_node(a) is not None: return -1
+    # new
+    parent = find_parent(a)
+    if parent is not None:
+        fname = basename(a)
+        parent[fname] = new_dir(parent)
+        print >> sys.stderr, "Created directory %s" % path
+        return 0
+    return -1
+
+
+def unlink(cwd, path):
+    global fdmap
+    print >> sys.stderr, "Got a call to unlink for %s in %s" % ( path, cwd )
+    path = cwd + '/' + path
+    try:
+        parent = find_parent(path)
+        del parent[basename(path)]
+        return 0
+
+    except Exception as e:
+        return -1
