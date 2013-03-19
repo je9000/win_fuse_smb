@@ -54,9 +54,7 @@
 	} \
 	PyTuple_SetItem(pArgs, pos, pValue);
 
-#define PY_CALL_WITH_ARGS_RET(func, ret) \
-	pRet = PyObject_CallObject(pf->pFunc##func, pArgs); \
-	Py_DECREF(pArgs); \
+#define PY_CHECK_RET(func, ret) \
 	if (!pRet) { \
         if (PyErr_Occurred()) { \
             fprintf(stderr, "vfs_python: Error in " #func "\n"); \
@@ -70,6 +68,11 @@
         return ret; \
     }
 
+#define PY_CALL_WITH_ARGS_RET(func, ret) \
+	pRet = PyObject_CallObject(pf->pFunc##func, pArgs); \
+	Py_DECREF(pArgs); \
+    PY_CHECK_RET(func, ret);
+
 #define PY_CALL_WITH_ARGS(func) PY_CALL_WITH_ARGS_RET(func, -1)
 
 struct my_dir {
@@ -81,6 +84,7 @@ struct my_dir {
 struct pyfuncs {
     PyObject	*pModule;
     PyObject	*pFuncConnect;
+    PyObject	*pFuncDisconnect;
     PyObject	*pFuncStat;
     PyObject	*pFuncFStat;
     PyObject	*pFuncGetDir;
@@ -108,13 +112,34 @@ static const char *make_full_path(vfs_handle_struct *handle, const char *path, c
 
 static void free_python_data(void **data)
 {
+    struct pyfuncs *pf = *data;
+
+    if (pf->pModule) Py_DECREF(pf->pModule);
+    if (pf->pFuncConnect) Py_DECREF(pf->pFuncConnect);
+    if (pf->pFuncDisconnect) Py_DECREF(pf->pFuncDisconnect);
+    if (pf->pFuncStat) Py_DECREF(pf->pFuncStat);
+    if (pf->pFuncFStat) Py_DECREF(pf->pFuncFStat);
+    if (pf->pFuncGetDir) Py_DECREF(pf->pFuncGetDir);
+    if (pf->pFuncOpenFile) Py_DECREF(pf->pFuncOpenFile);
+    if (pf->pFuncClose) Py_DECREF(pf->pFuncClose);
+    if (pf->pFuncUnlink) Py_DECREF(pf->pFuncUnlink);
+    if (pf->pFuncRead) Py_DECREF(pf->pFuncRead);
+    if (pf->pFuncPRead) Py_DECREF(pf->pFuncPRead);
+    if (pf->pFuncWrite) Py_DECREF(pf->pFuncWrite);
+    if (pf->pFuncPWrite) Py_DECREF(pf->pFuncPWrite);
+    if (pf->pFuncLSeek) Py_DECREF(pf->pFuncLSeek);
+    if (pf->pFuncMkDir) Py_DECREF(pf->pFuncMkDir);
+    if (pf->pFuncRename) Py_DECREF(pf->pFuncRename);
+    if (pf->pFuncDiskFree) Py_DECREF(pf->pFuncDiskFree);
+    if (pf->pErrno) Py_DECREF(pf->pErrno);
+
     SAFE_FREE(*data);
 }
 
 static int python_connect(vfs_handle_struct *handle,  const char *service, const char *user)    
 {
 	PyObject *pRet, *pArgs, *pValue;
-    const char *pysource;
+    const char *pysource, *pyarg;
     struct pyfuncs *pf;
     int i;
 
@@ -136,12 +161,14 @@ static int python_connect(vfs_handle_struct *handle,  const char *service, const
 		return -1;
     }
 
+    pyarg = lp_parm_const_string(SNUM(handle->conn), "vfs_python", "connect_arg", NULL);
+
 	pArgs = PyString_FromString(pysource);
 	pf->pModule = PyImport_Import(pArgs);
 	Py_DECREF(pArgs);
 
 	if (!pf->pModule) {
-		fprintf(stderr, "Failed to load module '%s', make sure %s.py exists in a directory in the PYTHONPATH environment variable.\n", pysource, pysource);
+		fprintf(stderr, "vfs_python: Failed to load module '%s', make sure %s.py exists in a directory in the PYTHONPATH environment variable.\n", pysource, pysource);
 		PyErr_Print();
         errno = E_INTERNAL;
 		return -1;
@@ -170,7 +197,7 @@ static int python_connect(vfs_handle_struct *handle,  const char *service, const
 	pf->pErrno = PyObject_GetAttrString(pf->pModule, "vfs_errno");
 	if (pf->pErrno && !PyInt_Check(pf->pErrno)) {
         Py_DECREF(pf->pErrno);
-		fprintf(stderr, "vfs_python: vfs_errno global variable not an int\n");
+		fprintf(stderr, "vfs_python: vfs_errno global variable missing or not an int\n");
         errno = E_INTERNAL;
 		return -1;
 	}
@@ -191,42 +218,23 @@ static int python_connect(vfs_handle_struct *handle,  const char *service, const
 
     VFS_PY_OPTIONAL_MODULE_FUNC(DiskFree, "diskfree");
     VFS_PY_OPTIONAL_MODULE_FUNC(Connect, "connect");
+    VFS_PY_OPTIONAL_MODULE_FUNC(Disconnect, "disconnect");
     VFS_PY_OPTIONAL_MODULE_FUNC(PRead, "pread");
     VFS_PY_OPTIONAL_MODULE_FUNC(PWrite, "pwrite");
 
-    /* Load some functions
-	pf->pFuncConnect = PyObject_GetAttrString(pf->pModule, "connect");
-	if (!pf->pFuncConnect || !PyCallable_Check(pf->pFuncConnect)) {
-		fprintf(stderr, "connect function not found or not callable\n");
-        errno = ENOSYS;
-		return -1;
-	}*/
-
     // Init done, do connect
     if (pf->pFuncConnect) {
-		pArgs = PyTuple_New(2);
-		if (!pArgs) {
-			errno = E_INTERNAL;
-			return -1;
-		}
-	
-		if (!(pValue = PyString_FromString(service))) {
-			Py_DECREF(pArgs);
-			errno = E_INTERNAL;
-			return -1;
-		}
-		PyTuple_SetItem(pArgs, 0, pValue);
-	
-		if (!(pValue = PyString_FromString(user))) {
-			Py_DECREF(pArgs);
-			errno = E_INTERNAL;
-			return -1;
-		}
-		PyTuple_SetItem(pArgs, 1, pValue);
-
+        PY_TUPLE_NEW(3);
+        PY_ADD_TO_TUPLE(service, PyString_FromString, 0);
+        PY_ADD_TO_TUPLE(user, PyString_FromString, 1);
+        if (pyarg) {
+            PY_ADD_TO_TUPLE(pyarg, PyString_FromString, 2);
+        } else {
+        	PyTuple_SetItem(pArgs, 2, Py_None);
+        }
         PY_CALL_WITH_ARGS(Connect);
-	
-		i = PyInt_AS_LONG(pValue);
+
+		i = PyInt_AS_LONG(pRet);
 		Py_DECREF(pRet);
 		return i;
     }
@@ -235,7 +243,13 @@ static int python_connect(vfs_handle_struct *handle,  const char *service, const
 
 static void python_disconnect(vfs_handle_struct *handle)
 {
-	;
+	struct pyfuncs *pf = handle->data;
+    PyObject *pRet;
+
+    if (pf->pFuncDisconnect) {
+        pRet = PyObject_CallObject(pf->pFuncDisconnect, NULL);
+        if (pRet) Py_DECREF(pRet);
+    }
 }
 
 static uint64_t python_disk_free(vfs_handle_struct *handle,  const char *path,
@@ -284,7 +298,7 @@ static uint64_t python_disk_free(vfs_handle_struct *handle,  const char *path,
     goto calc_return;
 
 missing_data:
-    fprintf(stderr, "vfs_python: diskfree() retuned invalid data.\n");
+    fprintf(stderr, "vfs_python: diskfree() failed or retuned invalid data.\n");
 no_func:
 	*dfree = DFREE_DEFAULT;
 	*dsize = DSIZE_DEFAULT;
@@ -383,12 +397,11 @@ static DIR *python_opendir(vfs_handle_struct *handle,  const char *fname, const 
 	}
 	Py_DECREF(pRet);
 
-	return de;
+	return (DIR *) de;
 }
 
 static DIR *python_fdopendir(vfs_handle_struct *handle, files_struct *fsp, const char *mask, uint32 attr)
 {
-fprintf(stderr, "fdopendir\n");
     errno = ENOSYS;
 	return NULL;
 }
@@ -398,7 +411,7 @@ static struct dirent *python_readdir(vfs_handle_struct *handle,
 				       SMB_STRUCT_STAT *sbuf)
 {
 	struct dirent *result;
-	struct my_dir *d = dirp;
+	struct my_dir *d = (struct my_dir *) dirp;
 
 	if (d->offset >= d->entries) return NULL;
 	result = &d->entry[d->offset++];
@@ -413,19 +426,19 @@ static struct dirent *python_readdir(vfs_handle_struct *handle,
 
 static void python_seekdir(vfs_handle_struct *handle,  DIR *dirp, long offset)
 {
-	struct my_dir *d = dirp;
+	struct my_dir *d = (struct my_dir *) dirp;
 	if (offset < d->entries) d->offset = offset;
 }
 
 static long python_telldir(vfs_handle_struct *handle,  DIR *dirp)
 {
-	struct my_dir *d = dirp;
+	struct my_dir *d = (struct my_dir *) dirp;
 	return d->offset;
 }
 
 static void python_rewind_dir(vfs_handle_struct *handle, DIR *dirp)
 {
-	struct my_dir *d = dirp;
+	struct my_dir *d = (struct my_dir *) dirp;
     d->offset = 0;
 }
 
@@ -463,7 +476,7 @@ static int python_rmdir(vfs_handle_struct *handle,  const char *path)
 	return python_unlink(handle, &fn);
 }
 
-static int python_closedir(vfs_handle_struct *handle,  DIR *dir)
+static int python_closedir(vfs_handle_struct *handle, DIR *dir)
 {
     if (dir) SAFE_FREE(dir);
 	return 0;
@@ -1133,6 +1146,7 @@ static int python_mknod(vfs_handle_struct *handle,  const char *path, mode_t mod
 	return -1;
 }
 
+/* Must return a pointer than can be freed by SAFE_FREE */
 static char *python_realpath(vfs_handle_struct *handle,  const char *path)
 {
     /*
@@ -1559,5 +1573,6 @@ struct vfs_fn_pointers python_opaque_fns = {
 NTSTATUS vfs_python_init(void)
 {
 	Py_Initialize();
+
 	return smb_register_vfs(SMB_VFS_INTERFACE_VERSION, "python", &python_opaque_fns);
 }
