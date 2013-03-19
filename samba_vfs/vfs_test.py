@@ -43,9 +43,13 @@ def basename(path):
     split_path = path.split("/")
     return split_path[-1]
 
-def connect(service, user):
-    print >> sys.stderr, "Someone connected! Service = %s, User = %s" % ( service, user )
+def connect(service, user, arg):
+    print >> sys.stderr, "Someone connected! Service = %s, User = %s, Pid = %i, initobj = %s" \
+        % ( service, user, os.getpid(), arg )
     return 0
+
+def disconnect():
+    print >> sys.stderr, "Disconnecting from pid %i!" % os.getpid()
 
 def getdir(path):
     found = find_node(path)

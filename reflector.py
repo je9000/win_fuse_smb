@@ -99,7 +99,7 @@ if (adhandle == None):
     sys.exit(-1)
 print("\nlistening on %s...\n" % (d.description))
 
-pcap_compile(adhandle, bpf, "ether host %s or ether broadcast" % OUR_MAC, 1, 0)
+pcap_compile(adhandle, bpf, "ether host %s or ether broadcast or dest host %s" % ( OUR_MAC, OUR_IP ), 1, 0)
 pcap_setfilter(adhandle, bpf)
 
 ## At this point, we don't need any more the device list. Free it
@@ -167,23 +167,21 @@ def handle_icmp(pcap, wire_packet, ip):
 
 def handle_tcp(pcap, wire_packet, ip):
 	tcp = ip.child()
-	if (	REFLECT_MAP.has_key(tcp.get_th_dport())
-		 or REFLECT_MAP_TO.has_key(tcp.get_th_sport())
-	):
-                global reply
-                if not reply :
-                        reply = build_ethernet_reply( wire_packet, ImpactPacket.IP.ethertype )
+	if ( REFLECT_MAP.has_key(tcp.get_th_dport()) or REFLECT_MAP_TO.has_key(tcp.get_th_sport()) ):
+		global reply
+		if not reply:
+			reply = build_ethernet_reply( wire_packet, ImpactPacket.IP.ethertype )
 
-                ip_reply = build_ip_reply( ip, ImpactPacket.TCP.protocol )
+		ip_reply = build_ip_reply( ip, ImpactPacket.TCP.protocol )
 
-                if REFLECT_MAP.has_key(tcp.get_th_dport()):
-                        tcp.set_th_dport( REFLECT_PORT_TO )
-                else:
-                        tcp.set_th_sport( REFLECT_PORT )
+		if REFLECT_MAP.has_key(tcp.get_th_dport()):
+			tcp.set_th_dport( REFLECT_PORT_TO )
+		else:
+			tcp.set_th_sport( REFLECT_PORT )
 
-                ip_reply.contains( tcp )
-                reply.contains( ip_reply )
-                pcap_sendpacket(pcap, cast(reply.get_packet(), POINTER(u_char)), reply.get_size())
+		ip_reply.contains( tcp )
+		reply.contains( ip_reply )
+		pcap_sendpacket(pcap, cast(reply.get_packet(), POINTER(u_char)), reply.get_size())
 
 
 ## Retrieve the packets
@@ -200,10 +198,10 @@ while(res >= 0):
 
 	if packet.get_ether_type() == ImpactPacket.IP.ethertype:
 		ip = packet.child()
-		if ( ip.get_ip_dst() != OUR_IP ): continue
+		#if ( ip.get_ip_dst() != OUR_IP ): continue
 		if ip.get_ip_p() == ImpactPacket.TCP.protocol:
 			handle_tcp(adhandle, packet, ip)
-		if ip.get_ip_p() == ImpactPacket.ICMP.protocol:
+		elif ip.get_ip_p() == ImpactPacket.ICMP.protocol:
 			handle_icmp(adhandle, packet, ip)
 
 	elif packet.get_ether_type() == ImpactPacket.ARP.ethertype:
