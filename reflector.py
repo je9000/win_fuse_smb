@@ -44,69 +44,6 @@ alldevs = POINTER(pcap_if_t)()
 errbuf = create_string_buffer(PCAP_ERRBUF_SIZE)
 bpf = bpf_program()
 
-## Retrieve the device list
-if (pcap_findalldevs(byref(alldevs), errbuf) == -1):
-	print ("Error in pcap_findalldevs: %s\n" % errbuf.value)
-	sys.exit(1)
-## Print the list
-i=0
-try:
-	d=alldevs.contents
-except:
-	print ("Error in pcap_findalldevs: %s" % errbuf.value)
-	print ("Maybe you need admin privilege?\n")
-	sys.exit(1)
-while d:
-	i=i+1
-	print("%d. %s" % (i, d.name))
-	if (d.description):
-		print (" (%s)\n" % (d.description))
-	else:
-		print (" (No description available)\n")
-	if d.next:
-		d=d.next.contents
-	else:
-		d=False
-
-if (i==0):
-	print ("\nNo interfaces found! Make sure WinPcap is installed.\n")
-	sys.exit(-1)
-print ("Enter the interface number (1-%d):" % (i))
-#inum= raw_input('--> ')
-inum = "1"
-if inum in string.digits:
-    inum=int(inum)
-else:
-    inum=0
-if ((inum < 1) | (inum > i)):
-    print ("\nInterface number out of range.\n")
-    ## Free the device list
-    pcap_freealldevs(alldevs)
-    sys.exit(-1)
-## Jump to the selected adapter
-d=alldevs
-for i in range(0,inum-1):
-    d=d.contents.next
-## Open the device
-## Open the adapter
-d=d.contents
-
-adhandle = pcap_open_live(d.name,65536,1,1,errbuf)
-if (adhandle == None):
-    print("\nUnable to open the adapter. %s is not supported by Pcap-WinPcap\n" % d.contents.name)
-    ## Free the device list
-    pcap_freealldevs(alldevs)
-    sys.exit(-1)
-print("\nlistening on %s...\n" % (d.description))
-
-pcap_compile(adhandle, bpf, "ether host %s or ether broadcast or dest host %s" % ( OUR_MAC, OUR_IP ), 1, 0)
-pcap_setfilter(adhandle, bpf)
-
-## At this point, we don't need any more the device list. Free it
-pcap_freealldevs(alldevs)
-
-ethdecoder = ImpactDecoder.EthDecoder()
-
 def build_ethernet_reply(eth, proto):
 	reply = ImpactPacket.Ethernet()
 	reply.set_ether_dhost( eth.get_ether_shost() )
@@ -183,31 +120,96 @@ def handle_tcp(pcap, wire_packet, ip):
 		reply.contains( ip_reply )
 		pcap_sendpacket(pcap, cast(reply.get_packet(), POINTER(u_char)), reply.get_size())
 
+# Loop forever. We might have to restart after the computer goes to sleep and
+# pcap starts throwing errors...
+while (1):
+        ## Retrieve the device list
+        if (pcap_findalldevs(byref(alldevs), errbuf) == -1):
+                print ("Error in pcap_findalldevs: %s\n" % errbuf.value)
+                sys.exit(1)
+        ## Print the list
+        i=0
+        try:
+                d=alldevs.contents
+        except:
+                print ("Error in pcap_findalldevs: %s" % errbuf.value)
+                print ("Maybe you need admin privilege?\n")
+                sys.exit(1)
+        while d:
+                i=i+1
+                print("%d. %s" % (i, d.name))
+                if (d.description):
+                        print (" (%s)\n" % (d.description))
+                else:
+                        print (" (No description available)\n")
+                if d.next:
+                        d=d.next.contents
+                else:
+                        d=False
 
-## Retrieve the packets
-res = 1
-while(res >= 0):
-	res=pcap_next_ex(adhandle, byref(header), byref(pkt_data))
-	if(res == 0):
-		# Timeout elapsed
-		continue
+        if (i==0):
+                print ("\nNo interfaces found! Make sure WinPcap is installed.\n")
+                sys.exit(-1)
+        #print ("Enter the interface number (1-%d):" % (i))
+        #inum= raw_input('--> ')
+        inum = "1"
+        if inum in string.digits:
+            inum=int(inum)
+        else:
+            inum=0
+        if ((inum < 1) | (inum > i)):
+            print ("\nInterface number out of range.\n")
+            ## Free the device list
+            pcap_freealldevs(alldevs)
+            sys.exit(-1)
+        ## Jump to the selected adapter
+        d=alldevs
+        for i in range(0,inum-1):
+            d=d.contents.next
+        ## Open the device
+        ## Open the adapter
+        d=d.contents
 
-	packet = ethdecoder.decode(string_at(pkt_data, header.contents.len))
-	#if packet.get_ether_dhost() != OUR_MAC_ARRAY and packet.get_ether_dhost() != BROADCAST_MAC_ARRAY:
-	#	continue
+        adhandle = pcap_open_live(d.name,65536,1,1,errbuf)
+        if (adhandle == None):
+            print("\nUnable to open the adapter. %s is not supported by Pcap-WinPcap\n" % d.contents.name)
+            ## Free the device list
+            pcap_freealldevs(alldevs)
+            sys.exit(-1)
+        print("\nlistening on %s...\n" % (d.description))
 
-	if packet.get_ether_type() == ImpactPacket.IP.ethertype:
-		ip = packet.child()
-		#if ( ip.get_ip_dst() != OUR_IP ): continue
-		if ip.get_ip_p() == ImpactPacket.TCP.protocol:
-			handle_tcp(adhandle, packet, ip)
-		elif ip.get_ip_p() == ImpactPacket.ICMP.protocol:
-			handle_icmp(adhandle, packet, ip)
+        pcap_compile(adhandle, bpf, "ether host %s or ether broadcast or dest host %s" % ( OUR_MAC, OUR_IP ), 1, 0)
+        pcap_setfilter(adhandle, bpf)
 
-	elif packet.get_ether_type() == ImpactPacket.ARP.ethertype:
-		handle_arp(adhandle, packet)
+        ## At this point, we don't need any more the device list. Free it
+        pcap_freealldevs(alldevs)
 
-if(res == -1):
-	print("Error reading the packets: %s\n", pcap_geterr(adhandle));
-	sys.exit(-1)
-pcap_close(adhandle)
+        ethdecoder = ImpactDecoder.EthDecoder()
+
+        ## Retrieve the packets
+        res = 1
+        while(res >= 0):
+                res=pcap_next_ex(adhandle, byref(header), byref(pkt_data))
+                if(res == 0):
+                        # Timeout elapsed
+                        continue
+
+                packet = ethdecoder.decode(string_at(pkt_data, header.contents.len))
+                #if packet.get_ether_dhost() != OUR_MAC_ARRAY and packet.get_ether_dhost() != BROADCAST_MAC_ARRAY:
+                #       continue
+
+                if packet.get_ether_type() == ImpactPacket.IP.ethertype:
+                        ip = packet.child()
+                        #if ( ip.get_ip_dst() != OUR_IP ): continue
+                        if ip.get_ip_p() == ImpactPacket.TCP.protocol:
+                                handle_tcp(adhandle, packet, ip)
+                        elif ip.get_ip_p() == ImpactPacket.ICMP.protocol:
+                                handle_icmp(adhandle, packet, ip)
+
+                elif packet.get_ether_type() == ImpactPacket.ARP.ethertype:
+                        handle_arp(adhandle, packet)
+
+        if(res == -1):
+                print "Error reading the packets: %s. Retrying in 30s\n" % pcap_geterr(adhandle)
+                pcap_close(adhandle)
+                sleep(30)
