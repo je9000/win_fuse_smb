@@ -1,11 +1,11 @@
 /* 
- * Skeleton VFS module.  Implements dummy versions of all VFS
- * functions.
+ * Python VFS module. Allows Samba filesystems to be written in Python.
  *
  * Copyright (C) Tim Potter, 1999-2000
  * Copyright (C) Alexander Bokovoy, 2002
  * Copyright (C) Stefan (metze) Metzmacher, 2003
  * Copyright (C) Jeremy Allison 2009
+ * Copyright (C) John Eaglesham 2013
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -31,14 +31,6 @@
 
 #define E_INTERNAL EIO
 #define PY_MAXPATH 256
-
-/* PLEASE,PLEASE READ THE VFS MODULES CHAPTER OF THE 
-   SAMBA DEVELOPERS GUIDE!!!!!!
- */
-
-/* If you take this file as template for your module
- * you must re-implement every function.
- */
 
 #define PY_TUPLE_NEW(n) \
 	if (!(pArgs = PyTuple_New(n))) { \
@@ -136,7 +128,7 @@ static void free_python_data(void **data)
 	SAFE_FREE(*data);
 }
 
-static int python_connect(vfs_handle_struct *handle,  const char *service, const char *user)	
+static int python_connect(vfs_handle_struct *handle,  const char *service, const char *user)
 {
 	PyObject *pRet, *pArgs, *pValue;
 	const char *pysource, *pyarg;
@@ -343,10 +335,10 @@ static NTSTATUS python_get_dfs_referrals(struct vfs_handle_struct *handle,
 
 static DIR *python_opendir(vfs_handle_struct *handle,  const char *fname, const char *mask, uint32 attr)
 {
-	struct my_dir		*de;
-	long				entries, i;
-	struct pyfuncs		*pf = handle->data;
-	PyObject			*pArgs, *pRet, *pValue;
+	struct my_dir *de;
+	long entries, i;
+	struct pyfuncs *pf = handle->data;
+	PyObject *pArgs, *pRet, *pValue;
 
 	pArgs = PyTuple_New(1);
 	if (!pArgs) {
@@ -364,14 +356,13 @@ static DIR *python_opendir(vfs_handle_struct *handle,  const char *fname, const 
 	PY_CALL_WITH_ARGS_RET(GetDir, NULL);
 
 	if (!PySequence_Check(pRet)) {
-		fprintf(stderr, "getdir did not return a sequence object!\n");
+		fprintf(stderr, "vfs_python: getdir() did not return a sequence object!\n");
 		errno = E_INTERNAL;
 		return NULL;
 	}
 
 	entries = PySequence_Length(pRet);
 	if (NULL == (de = SMB_MALLOC(
-		/* Could subtract the size of one entry from the malloc but that's okay */
 		sizeof(*de) + (sizeof(de->entry[0]) * (entries - 1))
 	))) {
 		Py_DECREF(pRet);
@@ -836,37 +827,6 @@ static int python_fsync_recv(struct tevent_req *req, int *err)
 static int python_stat_helper(PyObject *pRet, SMB_STRUCT_STAT *st)
 {
 	PyObject *pValue;
-/*
-struct stat_ex {
-	dev_t	   st_ex_dev;
-	ino_t	   st_ex_ino;
-	mode_t	  st_ex_mode;
-	nlink_t	 st_ex_nlink;
-	uid_t	   st_ex_uid;
-	gid_t	   st_ex_gid;
-	dev_t	   st_ex_rdev;
-	off_t	   st_ex_size;
-	struct timespec st_ex_atime;
-	struct timespec st_ex_mtime;
-	struct timespec st_ex_ctime;
-	struct timespec st_ex_btime; // birthtime
-	// Is birthtime real, or was it calculated ?
-	bool		st_ex_calculated_birthtime;
-	blksize_t   st_ex_blksize;
-	blkcnt_t	st_ex_blocks;
-
-	uint32_t	st_ex_flags;
-	uint32_t	st_ex_mask;
-
-	//
-	 * Add space for VFS internal extensions. The initial user of this
-	 * would be the onefs modules, passing the snapid from the stat calls
-	 * to the file_id_create call. Maybe we'll have to expand this later,
-	 * but the core of Samba should never look at this field.
-	 //
-	uint64_t vfs_private;
-};
-*/
 
 #define VFS_PY_STAT_VALUE(_name, _member, _default) \
 	if ((pValue = PyMapping_GetItemString(pRet, _name))) { \
