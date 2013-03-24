@@ -13,20 +13,6 @@ root['testdir'] = { "testdirfile1" : bytearray("test dir file 1") }
 fd = 0
 fdmap = {}
 
-def alloc_fd():
-    global lastfd
-    global fdmap
-    newfd = lastfd + 1
-    if newfd > sys.maxint: newfd = 1
-    if fdmap.haskey(newfd):
-        newfd += 1
-        if newfd > sys.maxint:
-            newfd = 1
-        if newfd == lastfd:
-            raise Exception
-    lastfd = newfd
-    return newfd
-
 def new_dir(parent):
     t = {}
     t['.'] = t
@@ -95,12 +81,13 @@ def close(path):
     return -1
 
 def open(path, flags, mode):
+    global fd
     global fdmap
     print >> sys.stderr, "Got a call to open for %s" % path
     # existing
     node = find_node(path)
     if node is not None:
-        fd = alloc_fd()
+        fd = fd + 1
         fdmap[fd] = { 'name': path, 'off': 0 }
         print >> sys.stderr, "Opened %s at fd %i" % (path,fd)
         return fd
@@ -109,13 +96,14 @@ def open(path, flags, mode):
     if parent is not None:
         fname = basename(path)
         parent[fname] = bytearray()
-        fd = alloc_fd()
+        fd = fd + 1
         fdmap[fd] = { 'name': path, 'off': 0 }
         print >> sys.stderr, "Created %s at fd %i" % (path,fd)
         return fd
     return -1
 
 def unlink(path):
+    global root
     print >> sys.stderr, "Got a call to unlink for %s" % a
     if find_node(path) is None: return -1
     del find_parent(path)[basename(path)];
