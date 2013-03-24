@@ -1,203 +1,68 @@
 import sys
 import os
-
-root = {}
-root['.'] = root;
-root['..'] = root;
-root['testfile1'] = bytearray("file 1 data");
-root['testfile2'] = bytearray("file 2 data");
-root['testdir'] = { "testdirfile1" : bytearray("test dir file 1") }
-
-#vfs_errno = 0
-
-fd = 0
-fdmap = {}
-
-def new_dir(parent):
-    t = {}
-    t['.'] = t
-    t['..'] = parent
-    return t
-
-def find_node_or_parent(path, parent):
-    global root
-    currently_at = start_at = root
-    split_path = path.split("/")
-    if parent: split_path = split_path[:-1]
-    try:
-        for node in split_path:
-            if node == "" or node == ".": continue
-            if type(currently_at) is not dict: raise Exception
-            currently_at = currently_at[node]
-        return currently_at
-    except Exception:
-        return None
-    
-def find_parent(path):
-    return find_node_or_parent(path, 1)
-
-def find_node(path):
-    return find_node_or_parent(path, 0)
-
-def basename(path):
-    split_path = path.split("/")
-    return split_path[-1]
+import Pyro4
 
 def connect(service, user, arg):
+    global p
+    p = Pyro4.Proxy("PYRO:mem_fs@localhost:5559")
     print >> sys.stderr, "Someone connected! Service = %s, User = %s, Pid = %i, initobj = %s" \
         % ( service, user, os.getpid(), arg )
-    return 0
+    return p.connect(service, user, arg)
 
 def disconnect():
+    global p
     print >> sys.stderr, "Disconnecting from pid %i!" % os.getpid()
+    return p.disconnect()
 
 def getdir(path):
-    found = find_node(path)
-    if not found or type(found) is not dict: return -1
-    return found.keys()
+    global p
+    return p.getdir(path)
 
 def fstat(fd):
-    global fdmap
-    print >> sys.stderr, "Being asked fstat for %i" % fd
-    if fdmap.has_key(fd):
-        return stat(fdmap[fd]['name'], 0)
-    return -1
+    global p
+    return p.fstat(fd)
 
 def stat(path, do_lstat):
-    print >> sys.stderr, "Got a call to stat for %s (lstat is %i)" % ( path, do_lstat )
-    node = find_node(path)
-    if node is not None:
-        if type(node) is bytearray:
-            return { "st_mode": 0777, "st_ino": id(node), "st_size": len(node) }
-        return { "st_mode": 0040000 | 0777, "st_ino": id(node) }
-    return -1
+    global p
+    return p.stat(path, do_lstat)
 
 def close(path):
-    global fdmap
-    print >> sys.stderr, "Got close for fd %i" % path
-    if fdmap.has_key(path):
-        del fdmap[path]
-        return 0
-    return -1
+    global p
+    return p.close(path)
 
 def open(path, flags, mode):
-    global fd
-    global fdmap
-    print >> sys.stderr, "Got a call to open for %s" % path
-    # existing
-    node = find_node(path)
-    if node is not None:
-        fd = fd + 1
-        fdmap[fd] = { 'name': path, 'off': 0 }
-        print >> sys.stderr, "Opened %s at fd %i" % (path,fd)
-        return fd
-    # new
-    parent = find_parent(path)
-    if parent is not None:
-        fname = basename(path)
-        parent[fname] = bytearray()
-        fd = fd + 1
-        fdmap[fd] = { 'name': path, 'off': 0 }
-        print >> sys.stderr, "Created %s at fd %i" % (path,fd)
-        return fd
-    return -1
+    global p
+    return p.open(path, flags, mode)
 
 def unlink(path):
-    global root
-    print >> sys.stderr, "Got a call to unlink for %s" % a
-    if find_node(path) is None: return -1
-    del find_parent(path)[basename(path)];
-    return 0
+    global p
+    return p.unlink(path)
 
 def read(fd, size):
-    global fdmap
-    print >> sys.stderr, "Got a call to read for fd %i size %i" % ( fd, size )
-    try:
-        fdinfo = fdmap[fd]
-        node = find_node(fdinfo['name'])
-        r = node[fdinfo['off']:fdinfo['off'] + size]
-        fdinfo['off'] = fdinfo['off'] + size
-        if fdinfo['off'] > len(node): fdinfo['off'] = len(node)
-        return r
-
-    except Exception as e:
-        print >> sys.stderr, "Read returning -1 because of ", e
-        return -1
+    global p
+    return p.read(fd, size)
 
 def write(fd, data):
-    global fdmap
-    #print >> sys.stderr, "Got a call to write for fd %i size %i" % ( fd, len(data) )
-    try:
-        fdinfo = fdmap[fd]
-        node = find_node(fdinfo['name'])
-        node[fdinfo['off'] : fdinfo['off'] + len(data)] = data
-        fdinfo['off'] = fdinfo['off'] + len(data)
-        return len(data)
-
-    except Exception as e:
-        print >> sys.stderr, "Write returning -1 because of ", e
-        return -1
+    global p
+    return p.write(fd, data)
 
 def pwrite(fd, data, offset):
-    global fdmap
-    #print >> sys.stderr, "Got a call to write for fd %i size %i" % ( fd, len(data) )
-    try:
-        fdinfo = fdmap[fd]
-        node = find_node(fdinfo['name'])
-        node[offset : offset + len(data)] = data
-        return len(data)
-
-    except Exception as e:
-        print >> sys.stderr, "Write returning -1 because of ", e
-        return -1
-
+    global p
+    return p.pwrite(fd, data, offset)
 
 def lseek(fd, where, whence):
-    global fdmap
-    #print >> sys.stderr, "Got a call to lseek for fd %i" % fd
-    try:
-        fdinfo = fdmap[fd]
-        node = find_node(fdinfo['name'])
-        if whence == os.SEEK_SET:
-            fdinfo['off'] = where
-        elif whence == os.SEEK_CUR:
-            fdinfo['off'] = fdinfo['off'] + where
-        elif whence == os.SEEK_END:
-            fdinfo['off'] = len(node) + where
-        else:
-            print >> sys.stderr, "What's seek %i" % whence
-            raise Exception
-        return fdinfo['off']  
-        
-    except Exception:
-        print >> sys.stderr, "lseek returning -1"
-        return -1
+    global p
+    return p.lseek(fd, where, whence)
 
 def diskfree(path):
-    return { "size": 1024*1024*1024*10, "used": 2048 }
+    global p
+    return p.diskfree(path)
 
 def mkdir(path, mode):
-    print >> sys.stderr, "Got a call to mkdir for %s" % path
-    # existing
-    if find_node(path) is not None:
-        print >> sys.stderr, "mkdir path is not None"
-        return -1
-    # new
-    parent = find_parent(path)
-    if parent is not None:
-        parent[basename(path)] = new_dir(parent)
-        print >> sys.stderr, "Created directory %s" % path
-        return 0
-    print >> sys.stderr, "mkdir parent is None"
-    return -1
-
+    global p
+    return p.mkdir(path, mode)
 
 def unlink(path):
-    print >> sys.stderr, "Got a call to unlink for %s" % path
-    try:
-        parent = find_parent(path)
-        del parent[basename(path)]
-        return 0
+    global p
+    return p.unlink(path)
 
-    except Exception as e:
-        return -1

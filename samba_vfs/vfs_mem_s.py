@@ -19,17 +19,15 @@ class mem_fs:
         return vfs_errno
 
     def alloc_fd(self):
-        global lastfd
-        global fdmap
-        newfd = lastfd + 1
+        newfd = self.lastfd + 1
         if newfd > sys.maxint: newfd = 1
-        if fdmap.haskey(newfd):
+        if self.fdmap.has_key(newfd):
             newfd += 1
             if newfd > sys.maxint:
                 newfd = 1
-            if newfd == lastfd:
+            if newfd == self.lastfd:
                 raise Exception
-        lastfd = newfd
+        self.lastfd = newfd
         return newfd
     
     def new_dir(self, parent):
@@ -75,10 +73,9 @@ class mem_fs:
         return found.keys()
     
     def fstat(self, fd):
-        global fdmap
         print >> sys.stderr, "Being asked fstat for %i" % fd
-        if fdmap.has_key(fd):
-            return self.stat(fdmap[fd]['name'], 0)
+        if self.fdmap.has_key(fd):
+            return self.stat(self.fdmap[fd]['name'], 0)
         return -1
     
     def stat(self, path, do_lstat):
@@ -91,36 +88,34 @@ class mem_fs:
         return -1
     
     def close(self, path):
-        global fdmap
         print >> sys.stderr, "Got close for fd %i" % path
-        if fdmap.has_key(path):
-            del fdmap[path]
+        if self.fdmap.has_key(path):
+            del self.fdmap[path]
             return 0
         return -1
     
     def open(self, path, flags, mode):
-        global fdmap
         print >> sys.stderr, "Got a call to open for %s" % path
         # existing
-        try:
-            node = self.find_node(path)
-            if node is not None:
-                fd = self.alloc_fd(self)
-                fdmap[fd] = { 'name': path, 'off': 0 }
-                print >> sys.stderr, "Opened %s at fd %i" % (path,fd)
-                return fd
-            # new
-            parent = find_parent(path)
-            if parent is not None:
-                fname = self.basename(path)
-                parent[fname] = bytearray()
-                fd = self.alloc_fd(self)
-                fdmap[fd] = { 'name': path, 'off': 0 }
-                print >> sys.stderr, "Created %s at fd %i" % (path,fd)
-                return fd
-            return -1
-        except:
-            return -1
+        #try:
+        node = self.find_node(path)
+        if node is not None:
+            fd = self.alloc_fd()
+            self.fdmap[fd] = { 'name': path, 'off': 0 }
+            print >> sys.stderr, "Opened %s at fd %i" % (path,fd)
+            return fd
+        # new
+        parent = self.find_parent(path)
+        if parent is not None:
+            fname = self.basename(path)
+            parent[fname] = bytearray()
+            fd = self.alloc_fd()
+            self.fdmap[fd] = { 'name': path, 'off': 0 }
+            print >> sys.stderr, "Created %s at fd %i" % (path,fd)
+            return fd
+        return -1
+        #except:
+        #    return -1
     
     def unlink(self, path):
         print >> sys.stderr, "Got a call to unlink for %s" % a
@@ -129,10 +124,9 @@ class mem_fs:
         return 0
     
     def read(self, fd, size):
-        global fdmap
         print >> sys.stderr, "Got a call to read for fd %i size %i" % ( fd, size )
         try:
-            fdinfo = fdmap[fd]
+            fdinfo = self.fdmap[fd]
             node = self.find_node(fdinfo['name'])
             r = node[fdinfo['off']:fdinfo['off'] + size]
             fdinfo['off'] = fdinfo['off'] + size
@@ -144,10 +138,9 @@ class mem_fs:
             return -1
     
     def write(self, fd, data):
-        global fdmap
         #print >> sys.stderr, "Got a call to write for fd %i size %i" % ( fd, len(data) )
         try:
-            fdinfo = fdmap[fd]
+            fdinfo = self.fdmap[fd]
             node = self.find_node(fdinfo['name'])
             node[fdinfo['off'] : fdinfo['off'] + len(data)] = data
             fdinfo['off'] = fdinfo['off'] + len(data)
@@ -158,10 +151,9 @@ class mem_fs:
             return -1
     
     def pwrite(self, fd, data, offset):
-        global fdmap
         #print >> sys.stderr, "Got a call to write for fd %i size %i" % ( fd, len(data) )
         try:
-            fdinfo = fdmap[fd]
+            fdinfo = self.fdmap[fd]
             node = self.find_node(fdinfo['name'])
             node[offset : offset + len(data)] = data
             return len(data)
@@ -172,10 +164,9 @@ class mem_fs:
     
     
     def lseek(self, fd, where, whence):
-        global fdmap
         #print >> sys.stderr, "Got a call to lseek for fd %i" % fd
         try:
-            fdinfo = fdmap[fd]
+            fdinfo = self.fdmap[fd]
             node = self.find_node(fdinfo['name'])
             if whence == os.SEEK_SET:
                 fdinfo['off'] = where

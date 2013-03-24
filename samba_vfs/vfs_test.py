@@ -10,7 +10,7 @@ root['testdir'] = { "testdirfile1" : bytearray("test dir file 1") }
 
 #vfs_errno = 0
 
-fd = 0
+lastfd = 0
 fdmap = {}
 
 def alloc_fd():
@@ -18,7 +18,7 @@ def alloc_fd():
     global fdmap
     newfd = lastfd + 1
     if newfd > sys.maxint: newfd = 1
-    if fdmap.haskey(newfd):
+    if fdmap.has_key(newfd):
         newfd += 1
         if newfd > sys.maxint:
             newfd = 1
