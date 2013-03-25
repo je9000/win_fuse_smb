@@ -30,7 +30,7 @@
 #include <libgen.h>
 #include <Python.h>
 
-#define E_INTERNAL EIO
+#define E_INTERNAL EFAULT
 #define PY_MAXPATH 256
 
 #define PY_TUPLE_NEW(n) \
@@ -50,7 +50,7 @@
 #define PY_CHECK_RET(func, ret) \
 	if (!pRet) { \
 		if (PyErr_Occurred()) { \
-			fprintf(stderr, "vfs_python: Error in " #func "\n"); \
+			DEBUG(1, ("vfs_python: Error in " #func "\n")); \
 			PyErr_Print(); \
 		} \
 		errno = E_INTERNAL; \
@@ -191,7 +191,7 @@ static int python_connect(vfs_handle_struct *handle, const char *service, const 
 
 	pysource_const = lp_parm_const_string(SNUM(handle->conn), "vfs_python", "module_name", NULL);
 	if (!pysource_const || pysource_const[0] == '\0') {
-		fprintf(stderr, "vfs_python: module_name not set!\n");
+		DEBUG(1, ("vfs_python: module_name not set!\n"));
 		errno = E_INTERNAL;
 		return -1;
 	}
@@ -199,7 +199,7 @@ static int python_connect(vfs_handle_struct *handle, const char *service, const 
 	/* strlen doesn't count the trailing NULL, so even if they're the same
 	   length it's no good. */
 	if (strlen(pysource_const) >= sizeof(pysource)) {
-		fprintf(stderr, "vfs_python: module_name too long!\n");
+		DEBUG(1, ("vfs_python: module_name too long!\n"));
 		errno = ENOMEM;
 		return -1;
 	}
@@ -237,7 +237,7 @@ static int python_connect(vfs_handle_struct *handle, const char *service, const 
 	pyarg = basename((char *) &pysource);
 
 	if (!pyarg || pyarg[0] == '\0') {
-		fprintf(stderr, "vfs_python: Invalid module_name!\n");
+		DEBUG(1, ("vfs_python: Invalid module_name!\n"));
 		errno = E_INTERNAL;
 		return -1;
 	}
@@ -247,7 +247,7 @@ static int python_connect(vfs_handle_struct *handle, const char *service, const 
 	Py_DECREF(pArgs);
 
 	if (!pf->pModule) {
-		fprintf(stderr, "vfs_python: Failed to load module '%s'. Make sure not to include a trailing '.py' or '.pyc' in your module path.\n", pysource_const);
+		DEBUG(1, ("vfs_python: Failed to load module '%s'. Make sure not to include a trailing '.py' or '.pyc' in your module path.\n", pysource_const));
 		PyErr_Print();
 		errno = E_INTERNAL;
 		return -1;
@@ -257,7 +257,7 @@ static int python_connect(vfs_handle_struct *handle, const char *service, const 
 	pf->pFunc##_member = PyObject_GetAttrString(pf->pModule, _name); \
 	if (!pf->pFunc##_member || !PyCallable_Check(pf->pFunc##_member)) { \
 		if (pf->pFunc##_member) Py_DECREF(pf->pFunc##_member); \
-		fprintf(stderr, "vfs_python: %s function not found or not callable\n", _name); \
+		DEBUG(1, ("vfs_python: %s function not found or not callable\n", _name)); \
 		errno = E_INTERNAL; \
 		return -1; \
 	}
@@ -276,7 +276,7 @@ static int python_connect(vfs_handle_struct *handle, const char *service, const 
 	pf->pErrno = PyObject_GetAttrString(pf->pModule, "vfs_errno");
 	if (pf->pErrno && !PyInt_Check(pf->pErrno)) {
 		Py_DECREF(pf->pErrno);
-		fprintf(stderr, "vfs_python: vfs_errno global variable not an int\n");
+		DEBUG(1, ("vfs_python: vfs_errno global variable not an int\n"));
 		errno = E_INTERNAL;
 		return -1;
 	}
@@ -389,7 +389,7 @@ static uint64_t python_disk_free(vfs_handle_struct *handle,  const char *path,
 	goto calc_return;
 
 missing_data:
-	fprintf(stderr, "vfs_python: diskfree() failed or retuned invalid data.\n");
+	DEBUG(1, ("vfs_python: diskfree() failed or retuned invalid data.\n"));
 no_func:
 	*dfree = DFREE_DEFAULT;
 	*dsize = DSIZE_DEFAULT;
@@ -455,7 +455,7 @@ static DIR *python_opendir(vfs_handle_struct *handle,  const char *fname, const 
 	PY_CALL_WITH_ARGS_RET(GetDir, NULL);
 
 	if (!PySequence_Check(pRet)) {
-		fprintf(stderr, "vfs_python: getdir() did not return a sequence object!\n");
+		DEBUG(1, ("vfs_python: getdir() did not return a sequence object!\n"));
 		errno = E_INTERNAL;
 		return NULL;
 	}
