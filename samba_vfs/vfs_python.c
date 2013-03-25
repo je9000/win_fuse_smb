@@ -100,6 +100,7 @@ struct pyfuncs {
 	PyObject	*pFuncSymlink;
 	PyObject	*pFuncLink;
 	PyObject	*pFuncReadLink;
+	PyObject	*pFuncIsOffline;
 
 	PyObject	*pModule;
 	PyObject	*pFuncGetPath;
@@ -144,6 +145,7 @@ static void free_python_data(void **data)
 	if (pf->pFuncSymlink) Py_DECREF(pf->pFuncSymlink);
 	if (pf->pFuncLink) Py_DECREF(pf->pFuncLink);
 	if (pf->pFuncReadLink) Py_DECREF(pf->pFuncReadLink);
+	if (pf->pFuncIsOffline) Py_DECREF(pf->pFuncIsOffline);
 
 	if (pf->pFuncGetPath) Py_DECREF(pf->pFuncGetPath);
 	if (pf->pErrno) Py_DECREF(pf->pErrno);
@@ -308,6 +310,7 @@ static int python_connect(vfs_handle_struct *handle, const char *service, const 
 	VFS_PY_OPTIONAL_MODULE_FUNC(Symlink, "symlink");
 	VFS_PY_OPTIONAL_MODULE_FUNC(Link, "link");
 	VFS_PY_OPTIONAL_MODULE_FUNC(ReadLink, "readlink");
+	VFS_PY_OPTIONAL_MODULE_FUNC(IsOffline, "isoffline");
 	VFS_PY_OPTIONAL_MODULE_FUNC(GetPath, "getpath");
 
 	// Init done, do connect
@@ -1674,8 +1677,25 @@ static bool python_aio_force(struct vfs_handle_struct *handle, struct files_stru
 
 static bool python_is_offline(struct vfs_handle_struct *handle, const struct smb_filename *fname, SMB_STRUCT_STAT *sbuf)
 {
-	errno = ENOSYS;
-	return false;
+	struct pyfuncs *pf = handle->data;
+	PyObject *pArgs, *pRet, *pValue;
+	char full_path_buf[PY_MAXPATH];
+	const char *full_path;
+	int i;
+
+	if (!pf->pFuncIsOffline) {
+		errno = ENOSYS;
+		return 0;
+	}
+
+	PY_TUPLE_NEW(1);
+	full_path = make_full_path(handle, fname->base_name, (char *) &full_path_buf);
+	PY_ADD_TO_TUPLE(full_path, PyString_FromString, 0);
+	PY_CALL_WITH_ARGS(IsOffline);
+
+	i = PyInt_AsLong(pRet);
+
+	return (i != 0);
 }
 
 static int python_set_offline(struct vfs_handle_struct *handle, const struct smb_filename *fname)
