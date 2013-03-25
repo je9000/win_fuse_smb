@@ -1234,7 +1234,7 @@ static int python_ftruncate(vfs_handle_struct *handle, files_struct *fsp, off_t 
 	PyObject *pArgs, *pRet, *pValue;
 	int i;
 
-	if (pf->pFuncFTruncate) {
+	if (!pf->pFuncFTruncate) {
 		errno = ENOSYS;
 		return -1;
 	}
@@ -1258,7 +1258,7 @@ static int python_fallocate(vfs_handle_struct *handle, files_struct *fsp,
 	PyObject *pArgs, *pRet, *pValue;
 	int i;
 
-	if (pf->pFuncFAllocate || mode == VFS_FALLOCATE_KEEP_SIZE) {
+	if (!pf->pFuncFAllocate || mode == VFS_FALLOCATE_KEEP_SIZE) {
 		errno = ENOSYS;
 		return -1;
 	}
