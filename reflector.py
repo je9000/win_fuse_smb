@@ -126,7 +126,8 @@ while (1):
         ## Retrieve the device list
         if (pcap_findalldevs(byref(alldevs), errbuf) == -1):
                 print ("Error in pcap_findalldevs: %s\n" % errbuf.value)
-                sys.exit(1)
+                time.sleep(30)
+                continue
         ## Print the list
         i=0
         try:
@@ -212,4 +213,4 @@ while (1):
         if(res == -1):
                 print "Error reading the packets: %s. Retrying in 30s\n" % pcap_geterr(adhandle)
                 pcap_close(adhandle)
-                sleep(30)
+                time.sleep(30)
