@@ -18,5 +18,16 @@
     <ClCompile Include="reflector.c">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="checksums.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="packets.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="checksums.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
   </ItemGroup>
 </Project>

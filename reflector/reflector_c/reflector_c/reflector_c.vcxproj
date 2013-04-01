@@ -11,7 +11,12 @@
     </ProjectConfiguration>
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="checksums.c" />
     <ClCompile Include="reflector.c" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="checksums.h" />
+    <ClInclude Include="packets.h" />
   </ItemGroup>
   <PropertyGroup Label="Globals">
     <ProjectGuid>{5D2A7F43-30E1-4F92-B1D6-98ECF9FACFA5}</ProjectGuid>
