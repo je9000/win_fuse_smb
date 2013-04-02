@@ -47,6 +47,7 @@
 #ifdef _WIN32
 #include <IPHlpApi.h>
 #define snprintf _snprintf
+#define sleep Sleep
 #endif
 
 #define IP_ADDR_LEN 4
@@ -288,6 +289,7 @@ int main(int argc, char** argv)
 	char packet_filter[128]; // Arbitrarily big
 	struct bpf_program fcode;
 	struct reflector_arguments args;
+	int worked_once = 0;
 
 	if (!parse_arguments(argc, argv, &args) || args.help) {
 		do_usage();
@@ -304,6 +306,7 @@ restart_reflector:
 
 	if (args.list_interfaces) {
 		print_devs(alldevs);
+		pcap_freealldevs(alldevs);
 		return 0;
 	}
 
@@ -313,6 +316,7 @@ restart_reflector:
 			!mac_from_string(our_mac.str, our_mac.bytes)
 		) {
 			fprintf(stderr, "Failed to parse MAC %s\n", our_mac.str);
+			pcap_freealldevs(alldevs);
 			return 1;
 		}
 	} else {
@@ -326,6 +330,7 @@ restart_reflector:
 		!ip_from_string(our_ip.str, (u_char *) &our_ip.num.bytes)
 	) {
 		fprintf(stderr, "Failed to parse IP %s\n", our_ip.str);
+		pcap_freealldevs(alldevs);
 		return 1;
 	}
 
@@ -334,13 +339,18 @@ restart_reflector:
 
 	d = find_interface(alldevs, args.interface_name);
 	if (d == NULL) {
+		if (worked_once) {
+			pcap_freealldevs(alldevs);
+			fprintf(stderr, "Error restarting reflector, trying again in 10 seconds.\n");
+			sleep(10000);
+			goto restart_reflector;
+		}
 		fprintf(stderr, "Couldn't find interface %s, try -list-interfaces?\n", args.interface_name);
 		return 1;
 	}
 
 	if (!get_mac(d, &listen_mac) || !get_ip(d, &listen_ip)) {
 		fprintf(stderr,"\nFailed to get interface MAC or IP address.\n");
-		/* Free the device list */
 		pcap_freealldevs(alldevs);
 		return 1;
 	}
@@ -355,7 +365,6 @@ restart_reflector:
 							 )) == NULL)
 	{
 		fprintf(stderr,"\nUnable to open adapter %s.\n", d->name);
-		/* Free the device list */
 		pcap_freealldevs(alldevs);
 		return 1;
 	}
@@ -390,13 +399,18 @@ restart_reflector:
 		return 1;
 	}
 	
-	printf("Reflector listening on...\n Device: %s\n IP: %s\n HW Addr: %s\n", args.interface_name, our_ip.str, our_mac.str);
+	printf("Reflector listening on...\n Device: %s\n IP: %s\n HW Addr: %s\n Ports: %i <=> %i\n",
+		args.interface_name, our_ip.str, our_mac.str, ntohs(reflect_port), ntohs(reflect_to_port)
+	);
 	
 	/* start the capture */
 	pcap_loop(pcaph, 0, packet_handler, (u_char *) pcaph);
 
+	worked_once = 1;
 	pcap_close(pcaph);
 
+	printf(stderr, "\nProcessing loop encountered an error, restarting in 10 seconds\n");
+	sleep(10000);
 	goto restart_reflector;
 	
 	return 0;

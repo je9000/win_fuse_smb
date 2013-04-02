@@ -8,7 +8,7 @@ root['testfile1'] = bytearray("file 1 data");
 root['testfile2'] = bytearray("file 2 data");
 root['testdir'] = { "testdirfile1" : bytearray("test dir file 1") }
 
-#vfs_errno = 0
+vfs_errno = 0
 
 lastfd = 0
 fdmap = {}
@@ -202,7 +202,6 @@ def mkdir(path, mode):
     print >> sys.stderr, "mkdir parent is None"
     return -1
 
-
 def unlink(path):
     print >> sys.stderr, "Got a call to unlink for %s" % path
     try:
@@ -212,3 +211,23 @@ def unlink(path):
 
     except Exception as e:
         return -1
+
+def rename(src, dst):
+    print >> sys.stderr, "Got a call to rename %s to %s" % (src, dst)
+    if find_node(src) is None:
+        print >> sys.stderr, "src doesn't exist!"
+        vfs_errno = ENOENT
+        return -1
+    if find_node(dst) is not None:
+        print >> sys.stderr, "dst exists!"
+        vfs_errno = EEXISTS
+        return -1
+
+    dst_parent = find_parent(dst)
+    src_parent = find_parent(src)
+
+    dst_parent[basename(dst)] = src_parent[basename(src)]
+    del src_parent[basename(src)]
+
+    return 0
+

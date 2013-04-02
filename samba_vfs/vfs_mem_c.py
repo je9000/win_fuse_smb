@@ -5,13 +5,10 @@ import Pyro4
 def connect(service, user, arg):
     global p
     p = Pyro4.Proxy("PYRO:mem_fs@localhost:5559")
-    print >> sys.stderr, "Someone connected! Service = %s, User = %s, Pid = %i, initobj = %s" \
-        % ( service, user, os.getpid(), arg )
     return p.connect(service, user, arg)
 
 def disconnect():
     global p
-    print >> sys.stderr, "Disconnecting from pid %i!" % os.getpid()
     return p.disconnect()
 
 def getdir(path):
@@ -65,4 +62,8 @@ def mkdir(path, mode):
 def unlink(path):
     global p
     return p.unlink(path)
+
+def rename(src, dst):
+    global p
+    return p.rename(src, dst)
 

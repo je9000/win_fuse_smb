@@ -65,7 +65,7 @@ class mem_fs:
         return 0
     
     def disconnect(self, ):
-        print >> sys.stderr, "Disconnecting from pid %i!" % os.getpid()
+        return
     
     def getdir(self, path):
         found = self.find_node(path)
@@ -73,13 +73,11 @@ class mem_fs:
         return found.keys()
     
     def fstat(self, fd):
-        print >> sys.stderr, "Being asked fstat for %i" % fd
         if self.fdmap.has_key(fd):
             return self.stat(self.fdmap[fd]['name'], 0)
         return -1
     
     def stat(self, path, do_lstat):
-        print >> sys.stderr, "Got a call to stat for %s (lstat is %i)" % ( path, do_lstat )
         node = self.find_node(path)
         if node is not None:
             if type(node) is bytearray:
@@ -88,21 +86,18 @@ class mem_fs:
         return -1
     
     def close(self, path):
-        print >> sys.stderr, "Got close for fd %i" % path
         if self.fdmap.has_key(path):
             del self.fdmap[path]
             return 0
         return -1
     
     def open(self, path, flags, mode):
-        print >> sys.stderr, "Got a call to open for %s" % path
         # existing
         #try:
         node = self.find_node(path)
         if node is not None:
             fd = self.alloc_fd()
             self.fdmap[fd] = { 'name': path, 'off': 0 }
-            print >> sys.stderr, "Opened %s at fd %i" % (path,fd)
             return fd
         # new
         parent = self.find_parent(path)
@@ -111,20 +106,17 @@ class mem_fs:
             parent[fname] = bytearray()
             fd = self.alloc_fd()
             self.fdmap[fd] = { 'name': path, 'off': 0 }
-            print >> sys.stderr, "Created %s at fd %i" % (path,fd)
             return fd
         return -1
         #except:
         #    return -1
     
     def unlink(self, path):
-        print >> sys.stderr, "Got a call to unlink for %s" % a
         if self.find_node(path) is None: return -1
         del self.find_parent(path)[self.basename(path)];
         return 0
     
     def read(self, fd, size):
-        print >> sys.stderr, "Got a call to read for fd %i size %i" % ( fd, size )
         try:
             fdinfo = self.fdmap[fd]
             node = self.find_node(fdinfo['name'])
@@ -138,7 +130,6 @@ class mem_fs:
             return -1
     
     def write(self, fd, data):
-        #print >> sys.stderr, "Got a call to write for fd %i size %i" % ( fd, len(data) )
         try:
             fdinfo = self.fdmap[fd]
             node = self.find_node(fdinfo['name'])
@@ -151,7 +142,6 @@ class mem_fs:
             return -1
     
     def pwrite(self, fd, data, offset):
-        #print >> sys.stderr, "Got a call to write for fd %i size %i" % ( fd, len(data) )
         try:
             fdinfo = self.fdmap[fd]
             node = self.find_node(fdinfo['name'])
@@ -164,7 +154,6 @@ class mem_fs:
     
     
     def lseek(self, fd, where, whence):
-        #print >> sys.stderr, "Got a call to lseek for fd %i" % fd
         try:
             fdinfo = self.fdmap[fd]
             node = self.find_node(fdinfo['name'])
@@ -187,7 +176,6 @@ class mem_fs:
         return { "size": 1024*1024*1024*10, "used": 2048 }
     
     def mkdir(self, path, mode):
-        print >> sys.stderr, "Got a call to mkdir for %s" % path
         # existing
         if self.find_node(path) is not None:
             print >> sys.stderr, "mkdir path is not None"
@@ -196,14 +184,12 @@ class mem_fs:
         parent = self.find_parent(path)
         if parent is not None:
             parent[self.basename(path)] = self.new_dir(parent)
-            print >> sys.stderr, "Created directory %s" % path
             return 0
         print >> sys.stderr, "mkdir parent is None"
         return -1
     
     
     def unlink(self, path):
-        print >> sys.stderr, "Got a call to unlink for %s" % path
         try:
             parent = self.find_parent(path)
             del parent[self.basename(path)]
@@ -211,6 +197,24 @@ class mem_fs:
     
         except Exception as e:
             return -1
+
+    def rename(self, src, dst):
+        if self.find_node(src) is None:
+            print >> sys.stderr, "src doesn't exist!"
+            self.vfs_errno = ENOENT
+            return -1
+        if self.find_node(dst) is not None:
+            print >> sys.stderr, "dst exists!"
+            self.vfs_errno = EEXISTS
+            return -1
+
+        dst_parent = self.find_parent(dst)
+        src_parent = self.find_parent(src)
+
+        dst_parent[self.basename(dst)] = src_parent[self.basename(src)]
+        del src_parent[self.basename(src)]
+
+        return 0
 
 # main
 daemon = Pyro4.Daemon(port=5559) #unixsocket="mem_fs")
