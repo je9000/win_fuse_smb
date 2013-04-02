@@ -156,6 +156,9 @@ struct tcphdr {
 	u_short	th_urp;			/* urgent pointer */
 };
 
+#define	ICMP_ECHOREPLY		0		/* echo reply */
+#define	ICMP_ECHO		8		/* echo service */
+
 struct icmp {
 	u_char	icmp_type;		/* type of message, see below */
 	u_char	icmp_code;		/* type sub code */
