@@ -12,6 +12,9 @@
 typedef	uint32_t tcp_seq;
 typedef int16_t n_short;
 
+#define	ETHERTYPE_IP		0x0800	/* IP protocol */
+#define ETHERTYPE_ARP		0x0806	/* Addr. resolution protocol */
+
 /*
  * The number of bytes in an ethernet (MAC) address.
  */
@@ -94,11 +97,11 @@ struct ip {
 	u_char	ip_vhl;			/* version << 4 | header length >> 2 */
 #else
 #if BYTE_ORDER == LITTLE_ENDIAN
-	u_int	ip_hl:4,		/* header length */
+	u_char	ip_hl:4,		/* header length */
 		ip_v:4;			/* version */
 #endif
 #if BYTE_ORDER == BIG_ENDIAN
-	u_int	ip_v:4,			/* version */
+	u_char	ip_v:4,			/* version */
 		ip_hl:4;		/* header length */
 #endif
 #endif /* not _IP_VHL */
@@ -130,11 +133,11 @@ struct tcphdr {
 	tcp_seq	th_seq;			/* sequence number */
 	tcp_seq	th_ack;			/* acknowledgement number */
 #if BYTE_ORDER == LITTLE_ENDIAN
-	u_int	th_x2:4,		/* (unused) */
+	u_char	th_x2:4,		/* (unused) */
 		th_off:4;		/* data offset */
 #endif
 #if BYTE_ORDER == BIG_ENDIAN
-	u_int	th_off:4,		/* data offset */
+	u_char	th_off:4,		/* data offset */
 		th_x2:4;		/* (unused) */
 #endif
 	u_char	th_flags;

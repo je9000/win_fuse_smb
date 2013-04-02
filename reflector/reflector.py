@@ -58,11 +58,6 @@ def build_ip_reply(ip, proto):
 	reply.set_ip_p( proto )
 	return reply
 
-def build_tcp_reply(tcp):
-	reply = ImpactPacket.TCP()
-	reply.set_th_sport( tcp.get_th_dport() )
-	reply.set_th_dport( tcp.get_th_sport() )
-
 def handle_arp(pcap, wire_packet):
 	arp = wire_packet.child()
 	if arp.get_op_name(arp.get_ar_op()) == 'REQUEST' and arp.as_pro(arp.get_ar_tpa()) == OUR_IP:
@@ -179,7 +174,7 @@ while (1):
             sys.exit(-1)
         print("\nlistening on %s...\n" % (d.description))
 
-        pcap_compile(adhandle, bpf, "ether host %s or ether broadcast or dest host %s" % ( OUR_MAC, OUR_IP ), 1, 0)
+        pcap_compile(adhandle, bpf, "ether dst host %s or ether broadcast or dst host %s" % ( OUR_MAC, OUR_IP ), 1, 0)
         pcap_setfilter(adhandle, bpf)
 
         ## At this point, we don't need any more the device list. Free it

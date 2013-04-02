@@ -123,7 +123,6 @@ def unlink(path):
 
 def read(fd, size):
     global fdmap
-    print >> sys.stderr, "Got a call to read for fd %i size %i" % ( fd, size )
     try:
         fdinfo = fdmap[fd]
         node = find_node(fdinfo['name'])

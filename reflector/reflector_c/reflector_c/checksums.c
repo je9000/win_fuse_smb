@@ -88,9 +88,9 @@ int do_checksum(char *buf, int protocol, int len)
     int sum = 0;
     int ip_version = buf[0] >> 4;
 
-    if ( ip_version == 6 ) {
+    if (ip_version == 6) {
         return 0;
-    } else if ( ip_version == 4 ) {
+    } else if (ip_version == 4) {
         iph_p = (struct ip *)buf;
         /*
          * This should mask off the top 4 bits first, but we know they are
@@ -100,7 +100,7 @@ int do_checksum(char *buf, int protocol, int len)
     } else {
         return (0);
     }
-    if ( ip_hl < 0 ) return -2;
+    if (ip_hl < 0) return -2;
 
     /*
      *  Dug Song came up with this very cool checksuming implementation
