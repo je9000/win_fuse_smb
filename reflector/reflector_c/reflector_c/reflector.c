@@ -403,13 +403,15 @@ restart_reflector:
 		args.interface_name, our_ip.str, our_mac.str, ntohs(reflect_port), ntohs(reflect_to_port)
 	);
 	
-	/* start the capture */
+#ifdef _WIN32
+	pcap_setmintocopy(pcaph, 1);
+#endif
 	pcap_loop(pcaph, 0, packet_handler, (u_char *) pcaph);
 
 	worked_once = 1;
 	pcap_close(pcaph);
 
-	printf(stderr, "\nProcessing loop encountered an error, restarting in 10 seconds\n");
+	fprintf(stderr, "\nProcessing loop encountered an error, restarting in 10 seconds\n");
 	sleep(10000);
 	goto restart_reflector;
 	
